@@ -1,61 +1,50 @@
 // Snake Game for Sega Mega Drive using SGDK 2.00
-// Modified with new music and intro screen
+// Modified with new music, intro screen, and multi-frame sprites as of March 01, 2025
 //
 // Overview:
-// This is a classic Snake game implemented for the Sega Mega Drive using the SGDK 2.00 library.
-// The player controls a snake that grows by eating red food dots, increasing in speed and difficulty.
-// Features a bordered playfield, 8-bit style chiptune music, and sound effects.
+// Classic Snake game where the player controls a snake that grows by eating food, featuring a bordered
+// playfield, chiptune music, and sound effects. Updated with multi-frame sprites and pause fixes.
 //
 // Main Features:
-// 1. Gameplay:
-//    - Snake moves in four directions (up, right, down, left) using the D-pad.
-//    - Eating food increases score by 10 and lengthens the snake.
-//    - Game ends on collision with borders or self.
-//    - Speed increases every 50 points (frame delay decreases from 8 to 3).
+// 1. Gameplay: Snake moves via D-pad, grows on eating food (score +10), ends on collision.
 // 2. Visuals:
-//    - Separate sprites for snake head (`snake_head_sprite`) and body (`snake_body_sprite`).
-//    - Red food dot (`food_sprite`) spawns randomly within borders.
-//    - Grey borders frame the 38x26 tile playfield (total grid: 40x28).
-//    - Score displayed above the top border at y=0.
-//    - New intro screen with "SNAKE GAME" title and "PRESS START" prompt.
-// 3. Audio:
-//    - Enhanced "chomp" sound on eating (Channel 0: 1000 Hz → 400 Hz, sharp and audible).
-//    - Simple 8-bit style melody loop that sounds like classic arcade games.
-//    - Music tempo increases as snake speed rises; volume kept low to prioritize chomp.
-// 4. Controls:
-//    - Start button begins game from intro screen, pauses/unpauses during gameplay, or restarts when game over.
-//    - "PAUSE" text appears centered when paused.
-// 5. Technical:
-//    - Uses PSG for sound: Channel 0 (eating), 1 (melody), 2 (bass).
-//    - Optimized with integer math, static variables, and minimal global access.
+//    - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
+//    - Body: 16x8 sprite sheet (2 frames: horizontal, vertical).
+//    - Food: Single 8x8 red dot.
+// 3. Audio: Chiptune melody with dynamic tempo, "chomp" sound, stops when paused.
+// 4. Controls: Start toggles states; D-pad moves snake.
+// 5. Technical: PSG audio, optimized math, manual VRAM management for sprites.
+//
+// Updates (Latest):
+// - Removed debug direction text from upper right corner (previously at 30, 0).
+// - Pause now stops music completely (volume decrease was ineffective).
 
-#include <genesis.h>        // SGDK library header for Mega Drive functionality
-#include "resource.h"       // Generated header for sprite resources (snake_head_sprite, snake_body_sprite, food_sprite)
+#include <genesis.h>        // SGDK library header
+#include "resource.h"       // Generated sprite resources
 
-// Game constants - Defining the game's grid and initial conditions
-#define GRID_WIDTH 40          // Width of the game grid (in tiles), including borders
-#define GRID_HEIGHT 28         // Height of the game grid (in tiles), including borders
-#define SNAKE_START_X 20       // Starting X position of the snake's head (within borders)
-#define SNAKE_START_Y 14       // Starting Y position of the snake's head (within borders)
-#define SNAKE_START_LENGTH 3   // Initial length of the snake
-#define SNAKE_MAX_LENGTH 80    // Maximum snake length (matches VDP sprite limit)
-#define INITIAL_DELAY 8        // Initial frame delay for game speed (higher = slower)
-#define MIN_DELAY 3            // Minimum frame delay (fastest speed)
-#define SNAKE_TILE_SIZE 8      // Size of each sprite tile (8x8 pixels)
+// Game constants
+#define GRID_WIDTH 40          // Total grid width in tiles (including borders)
+#define GRID_HEIGHT 28         // Total grid height in tiles (including borders)
+#define SNAKE_START_X 20       // Snake head’s starting X
+#define SNAKE_START_Y 14       // Snake head’s starting Y
+#define SNAKE_START_LENGTH 3   // Initial snake length
+#define SNAKE_MAX_LENGTH 80    // Max snake length (VDP limit)
+#define INITIAL_DELAY 8        // Initial frame delay (slower)
+#define MIN_DELAY 3            // Minimum frame delay (faster)
+#define SNAKE_TILE_SIZE 8      // Sprite tile size (8x8 pixels)
 
-// Snake directions - Constants for movement directions
-#define DIR_UP 0               // Up direction
-#define DIR_RIGHT 1            // Right direction
-#define DIR_DOWN 2             // Down direction
-#define DIR_LEFT 3             // Left direction
+// Snake directions
+#define DIR_UP 0               // Up (head frame 2)
+#define DIR_RIGHT 1            // Right (head frame 1)
+#define DIR_DOWN 2             // Down (head frame 0)
+#define DIR_LEFT 3             // Left (head frame 3)
 
 // Game states
-#define STATE_INTRO 0          // Intro/title screen
+#define STATE_INTRO 0          // Intro screen
 #define STATE_PLAYING 1        // Gameplay
 #define STATE_GAMEOVER 2       // Game over
 
-// Music constants - PSG frequencies for notes (approx. values for chiptune feel)
-// Simple 8-bit melody notes
+// Music constants
 #define NOTE_C4  262           // C4 (~262 Hz)
 #define NOTE_D4  294           // D4 (~294 Hz)
 #define NOTE_E4  330           // E4 (~330 Hz)
@@ -66,279 +55,268 @@
 #define NOTE_C5  523           // C5 (~523 Hz)
 #define NOTE_E5  659           // E5 (~659 Hz)
 #define NOTE_G5  784           // G5 (~784 Hz)
-#define NOTE_REST 0            // Rest (silence)
-#define MELODY_SIZE 16         // Number of notes in melody loop
-#define BASS_SIZE 8            // Number of notes in bass loop
+#define NOTE_REST 0            // Silence
+#define MELODY_SIZE 16         // Melody loop length
+#define BASS_SIZE 8            // Bass loop length
 
-// Game objects - Structure for representing positions
+// Game objects
 typedef struct {
-    s16 x;                     // X coordinate (signed 16-bit integer)
-    s16 y;                     // Y coordinate (signed 16-bit integer)
+    s16 x;                     // X position in tiles
+    s16 y;                     // Y position in tiles
 } Point;
 
-// Music note structure - Defines a note's pitch and duration
+// Music note structure
 typedef struct {
-    u16 frequency;             // PSG frequency for the note
-    u16 baseDuration;          // Base duration in frames at INITIAL_DELAY (scaled by speed)
+    u16 frequency;             // PSG frequency (Hz)
+    u16 baseDuration;          // Base duration in frames
 } Note;
 
-// Game state variables - Global variables tracking game state
-static Point snakeBody[SNAKE_MAX_LENGTH]; // Array of snake body segments (position data)
-static u16 snakeLength;                   // Current length of the snake
-static u16 direction;                     // Current movement direction of the snake
-static u16 nextDirection;                 // Next direction (buffered from input)
-static Point food;                        // Position of the food dot
-static u16 score;                         // Player's score
-static u16 gameState;                     // Current game state (intro, playing, game over)
-static u16 frameDelay;                    // Delay between updates (controls game speed)
-static u16 frameCount;                    // Frame counter for timing updates
-static u16 paused;                        // Pause flag (TRUE = game is paused)
-static u16 prevStartState;                // Previous state of the Start button (for edge detection)
-static u16 introAnimFrame;                // Frame counter for intro screen animations
+// Game state variables
+static Point snakeBody[SNAKE_MAX_LENGTH]; // Snake segments (head at [0])
+static u16 snakeLength;                   // Current length
+static u16 direction;                     // Current direction
+static u16 nextDirection;                 // Buffered direction
+static Point food;                        // Food position
+static u16 score;                         // Player score
+static u16 gameState;                     // Current state
+static u16 frameDelay;                    // Frames between updates
+static u16 frameCount;                    // Frame counter
+static u16 paused;                        // Pause flag
+static u16 prevStartState;                // Start button state
+static u16 introAnimFrame;                // Intro animation counter
 
-// Music state variables - Tracking chiptune playback
-static Note melody[MELODY_SIZE] = {       // Simple 8-bit style melody (16 notes)
-    {NOTE_C4, 8}, {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_C5, 16},  // First phrase
-    {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_C5, 16}, {NOTE_REST, 8}, // Second phrase
-    {NOTE_A4, 8}, {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_G4, 16},  // Third phrase
-    {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 16}   // Final phrase
+// Music state variables
+static Note melody[MELODY_SIZE] = {
+    {NOTE_C4, 8}, {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_C5, 16},
+    {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_C5, 16}, {NOTE_REST, 8},
+    {NOTE_A4, 8}, {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_G4, 16},
+    {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 16}
 };
-static Note bass[BASS_SIZE] = {           // Simple bass line (8 notes)
-    {NOTE_C4, 16}, {NOTE_G4/2, 16},       // First measure
-    {NOTE_C4, 16}, {NOTE_G4/2, 16},       // Second measure
-    {NOTE_A4/2, 16}, {NOTE_E4/2, 16},     // Third measure
-    {NOTE_F4/2, 16}, {NOTE_G4/2, 16}      // Fourth measure
+static Note bass[BASS_SIZE] = {
+    {NOTE_C4, 16}, {NOTE_G4/2, 16},
+    {NOTE_C4, 16}, {NOTE_G4/2, 16},
+    {NOTE_A4/2, 16}, {NOTE_E4/2, 16},
+    {NOTE_F4/2, 16}, {NOTE_G4/2, 16}
 };
-static u16 melodyIndex = 0;               // Current note index in melody
-static u16 bassIndex = 0;                 // Current note index in bass
-static u16 melodyCounter = 0;             // Frames remaining for current melody note
-static u16 bassCounter = 0;               // Frames remaining for current bass note
+static u16 melodyIndex = 0;
+static u16 bassIndex = 0;
+static u16 melodyCounter = 0;
+static u16 bassCounter = 0;
 
-// Sprite engine objects - Pointers to sprite instances
-static Sprite* spriteHead = NULL;               // Sprite for the snake's head (uses snake_head_sprite)
-static Sprite* spriteBody[SNAKE_MAX_LENGTH - 1]; // Array of sprites for body segments (uses snake_body_sprite)
-static Sprite* spriteFood = NULL;               // Sprite for the food dot (uses food_sprite)
+// Sprite engine objects
+static Sprite* spriteHead = NULL;               // Head sprite (4 frames)
+static Sprite* spriteBody[SNAKE_MAX_LENGTH - 1]; // Body sprites (2 frames)
+static Sprite* spriteFood = NULL;               // Food sprite
+static u16 headVramIndexes[4];                  // VRAM indices for head frames
+static u16 bodyVramIndexes[2];                  // VRAM indices for body frames
 
-// Function prototypes - Forward declarations for all static functions
-static void initGame(void);         // Initializes or resets the game state
-static void showIntroScreen(void);  // Displays and manages the intro screen
-static void updateIntroScreen(void); // Updates intro screen animations
-static void startGame(void);        // Transitions from intro to gameplay
-static void handleInput(void);      // Processes player input from the controller
-static void updateGame(void);       // Updates game logic (movement, collisions, food)
-static void drawGame(void);         // Renders sprites to their current positions
-static void generateFood(void);     // Places a new food dot on the grid
-static u16 checkCollision(s16 x, s16 y); // Checks if a position collides with the snake
-static void showGameOver(void);     // Displays the game over message
-static void playEatSound(void);     // Plays an enhanced sound when food is eaten
-static void togglePause(void);      // Toggles pause state and displays/clears "PAUSE" text
-static void updateMusic(void);      // Updates chiptune music playback with dynamic tempo
+// Function prototypes
+static void initGame(void);
+static void showIntroScreen(void);
+static void updateIntroScreen(void);
+static void startGame(void);
+static void handleInput(void);
+static void updateGame(void);
+static void drawGame(void);
+static void generateFood(void);
+static u16 checkCollision(s16 x, s16 y);
+static void showGameOver(void);
+static void playEatSound(void);
+static void togglePause(void);
+static void updateMusic(void);
 
-// Main function - Entry point of the program
+// Main function: Runs the game loop
 int main() {
-    JOY_init();                     // Initialize joystick input system
-    SPR_init();                     // Initialize the sprite engine for rendering
+    JOY_init();
+    SPR_init();
     
-    // Set up palette for PAL0 (used by all sprites, text, and borders)
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000)); // Index 0: Black (background)
-    PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000)); // Index 1: Dark green (snake head and body)
-    PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000)); // Index 2: Red (food)
-    PAL_setColor(3, RGB24_TO_VDPCOLOR(0xC0C0C0)); // Index 3: Grey (border)
-    PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000)); // Index 4: Dark red (snake's tongue)
-    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); // Index 15: White (text)
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000)); // Black
+    PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000)); // Dark green
+    PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000)); // Red
+    PAL_setColor(3, RGB24_TO_VDPCOLOR(0xC0C0C0)); // Grey
+    PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000)); // Dark red
+    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); // White
     
-    VDP_setTextPalette(PAL0);       // Assign PAL0 to text rendering
-    VDP_setTextPriority(1);         // Ensure text renders above sprites
+    VDP_setTextPalette(PAL0);
+    VDP_setTextPriority(1);
     
-    PSG_reset();                    // Reset PSG sound channels to a silent state
+    PSG_reset();
     
-    showIntroScreen();              // Start with the intro screen
+    showIntroScreen();
     
-    // Main game loop - Runs indefinitely
     while (1) {
-        handleInput();              // Process player input
-
-        if (gameState == STATE_INTRO) {
-            updateIntroScreen();    // Update intro screen animations
-        } else if (gameState == STATE_PLAYING) {
-            frameCount++;           // Increment frame counter for timing
-            
-            if (frameCount >= frameDelay) { // Update game logic at set intervals
-                frameCount = 0;     // Reset counter after update
-                if (!paused) {      // Only update if game isn't paused
-                    updateGame();
-                }
+        handleInput();
+        if (gameState == STATE_INTRO) updateIntroScreen();
+        else if (gameState == STATE_PLAYING) {
+            frameCount++;
+            if (frameCount >= frameDelay && !paused) {
+                frameCount = 0;
+                updateGame();
             }
-            
-            drawGame();             // Update sprite positions on screen
+            drawGame();
         }
-        
-        updateMusic();              // Update chiptune music playback each frame
-        SPR_update();               // Refresh sprite engine to display changes
-        SYS_doVBlankProcess();      // Handle VBlank processing (syncs with display refresh)
+        updateMusic();
+        SPR_update();
+        SYS_doVBlankProcess();
     }
     
-    return 0;                       // Exit code (never reached due to infinite loop)
+    return 0;
 }
 
-// Displays and manages the intro screen
-static void showIntroScreen(void) {
-    VDP_clearPlane(BG_A, TRUE);     // Clear the background plane
+// Initializes game state and sprites
+static void initGame(void) {
+    if (spriteHead) SPR_releaseSprite(spriteHead);
+    for (u16 i = 0; i < SNAKE_MAX_LENGTH - 1; i++) {
+        if (spriteBody[i]) SPR_releaseSprite(spriteBody[i]);
+        spriteBody[i] = NULL;
+    }
+    if (spriteFood) SPR_releaseSprite(spriteFood);
     
-    // Draw the title and instructions
-    VDP_setTextPalette(PAL0);
-    VDP_drawText("AI SNAKE", 15, 8);
+    VDP_clearPlane(BG_A, TRUE);
     
-    VDP_drawText("MEGA DRIVE EDITION", 11, 10);
+    static const u32 borderTile[8] = { 
+        0x33333333, 0x33333333, 0x33333333, 0x33333333,
+        0x33333333, 0x33333333, 0x33333333, 0x33333333
+    };
+    VDP_loadTileData(borderTile, TILE_USER_INDEX, 1, DMA);
+    u16 vramIndex = TILE_USER_INDEX + 1;
     
-    VDP_drawText("PRESS START TO PLAY", 11, 16);
-    VDP_drawText("USE D-PAD TO MOVE", 12, 18);
+    const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, TILE_USER_INDEX);
+    for (u16 i = 0; i < GRID_WIDTH; i++) {
+        VDP_setTileMapXY(BG_A, borderTileAttr, i, 1);
+        VDP_setTileMapXY(BG_A, borderTileAttr, i, GRID_HEIGHT - 1);
+    }
+    for (u16 i = 2; i < GRID_HEIGHT - 1; i++) {
+        VDP_setTileMapXY(BG_A, borderTileAttr, 0, i);
+        VDP_setTileMapXY(BG_A, borderTileAttr, GRID_WIDTH - 1, i);
+    }
     
-    // Set up variables for intro animation
-    introAnimFrame = 0;
-    gameState = STATE_INTRO;
+    // Load head frames (32x8, 4x 8x8)
+    Animation* headAnim = snake_head_sprite.animations[0];
+    for (u16 i = 0; i < 4; i++) {
+        TileSet* tileset = headAnim->frames[i]->tileset;
+        VDP_loadTileSet(tileset, vramIndex, DMA);
+        headVramIndexes[i] = vramIndex;
+        vramIndex += tileset->numTile;
+    }
     
-    // Initialize music to play at intro tempo
+    // Load body frames (16x8, 2x 8x8)
+    Animation* bodyAnim = snake_body_sprite.animations[0];
+    for (u16 i = 0; i < 2; i++) { // 0=horizontal, 1=vertical
+        TileSet* tileset = bodyAnim->frames[i]->tileset;
+        VDP_loadTileSet(tileset, vramIndex, DMA);
+        bodyVramIndexes[i] = vramIndex;
+        vramIndex += tileset->numTile;
+    }
+    
+    snakeLength = SNAKE_START_LENGTH;
+    for (u16 i = 0; i < snakeLength; i++) {
+        snakeBody[i].x = SNAKE_START_X - i;
+        snakeBody[i].y = SNAKE_START_Y;
+    }
+    
+    direction = DIR_RIGHT;
+    nextDirection = DIR_RIGHT;
+    
+    spriteHead = SPR_addSprite(&snake_head_sprite, 
+                              SNAKE_START_X * SNAKE_TILE_SIZE, 
+                              SNAKE_START_Y * SNAKE_TILE_SIZE,
+                              TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
+    SPR_setAutoTileUpload(spriteHead, FALSE);
+    SPR_setFrame(spriteHead, 1); // Right
+    SPR_setVRAMTileIndex(spriteHead, headVramIndexes[1]);
+    
+    for (u16 i = 1; i < snakeLength; i++) {
+        spriteBody[i-1] = SPR_addSprite(&snake_body_sprite, 
+                                       snakeBody[i].x * SNAKE_TILE_SIZE, 
+                                       snakeBody[i].y * SNAKE_TILE_SIZE,
+                                       TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
+        SPR_setAutoTileUpload(spriteBody[i-1], FALSE);
+        SPR_setFrame(spriteBody[i-1], 0); // Horizontal initially
+        SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[0]);
+    }
+    for (u16 i = snakeLength - 1; i < SNAKE_MAX_LENGTH - 1; i++) {
+        spriteBody[i] = NULL;
+    }
+    
+    generateFood();
+    spriteFood = SPR_addSprite(&food_sprite, 
+                              food.x * SNAKE_TILE_SIZE, 
+                              food.y * SNAKE_TILE_SIZE,
+                              TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
+    
+    score = 0;
+    paused = FALSE;
+    prevStartState = TRUE;
+    frameDelay = INITIAL_DELAY;
+    frameCount = 0;
+    
     melodyIndex = 0;
     bassIndex = 0;
     melodyCounter = 0;
     bassCounter = 0;
     
-    // Reset game variables
-    score = 0;
-    paused = FALSE;
-    prevStartState = TRUE;          // Set to TRUE to avoid immediate start
+    char scoreText[20];
+    sprintf(scoreText, "SCORE: %4d", score);
+    VDP_drawText(scoreText, 1, 0);
 }
 
-// Updates intro screen animations
+// Displays intro screen
+static void showIntroScreen(void) {
+    VDP_clearPlane(BG_A, TRUE);
+    VDP_drawText("AI SNAKE", 15, 8);
+    VDP_drawText("MEGA DRIVE EDITION", 11, 10);
+    VDP_drawText("PRESS START TO PLAY", 11, 16);
+    VDP_drawText("USE D-PAD TO MOVE", 12, 18);
+    
+    introAnimFrame = 0;
+    gameState = STATE_INTRO;
+    
+    melodyIndex = 0;
+    bassIndex = 0;
+    melodyCounter = 0;
+    bassCounter = 0;
+    
+    score = 0;
+    paused = FALSE;
+    prevStartState = TRUE;
+}
+
+// Updates intro animations
 static void updateIntroScreen(void) {
     introAnimFrame++;
-    
-    // Animate "PRESS START" text by flashing (every 30 frames)
     if (introAnimFrame % 60 < 30) {
         VDP_drawText("PRESS START TO PLAY", 11, 16);
     } else {
-        VDP_clearText(11, 16, 19);  // Clear text
+        VDP_clearText(11, 16, 19);
     }
     
-    // Add a simple snake animation in the background (every 15 frames)
     if (introAnimFrame % 15 == 0) {
-        // Clear previous animation frame
-        VDP_clearText(10 + (introAnimFrame / 15) % 20, 22, 2);
-        
-        // Draw new snake segment
-        VDP_drawText("O", 11 + (introAnimFrame / 15) % 20, 22);
+        u16 x = (introAnimFrame / 15) % 28;
+        u16 y = 22 + ((x % 4) < 2 ? 0 : 1);
+        VDP_clearTextArea(10, 22, 20, 2);
+        VDP_drawText("O-", 11 + x, y);
     }
 }
 
-// Transitions from intro to gameplay
+// Starts gameplay
 static void startGame(void) {
     initGame();
     gameState = STATE_PLAYING;
 }
 
-// Initializes or resets the game to starting conditions
-static void initGame(void) {
-    // Clean up any existing sprites to prevent memory leaks
-    if (spriteHead) SPR_releaseSprite(spriteHead);
-    for (u16 i = 0; i < SNAKE_MAX_LENGTH - 1; i++) {
-        if (spriteBody[i]) SPR_releaseSprite(spriteBody[i]);
-        spriteBody[i] = NULL;       // Clear body sprite pointers
-    }
-    if (spriteFood) SPR_releaseSprite(spriteFood);
-    
-    VDP_clearPlane(BG_A, TRUE);    // Clear the background plane (removes old graphics)
-    
-    // Define and load a solid grey tile for the border (palette index 3)
-    static const u32 borderTile[8] = { 
-        0x33333333, 0x33333333, 0x33333333, 0x33333333,
-        0x33333333, 0x33333333, 0x33333333, 0x33333333
-    };
-    VDP_loadTileData(borderTile, TILE_USER_INDEX, 1, DMA); // Load tile into VRAM
-    
-    // Draw borders on BG_A using grey (index 3), shifted down one row
-    const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, TILE_USER_INDEX);
-    for (u16 i = 0; i < GRID_WIDTH; i++) {
-        VDP_setTileMapXY(BG_A, borderTileAttr, i, 1);         // Top border (row 1)
-        VDP_setTileMapXY(BG_A, borderTileAttr, i, GRID_HEIGHT - 1); // Bottom border (row 27)
-    }
-    for (u16 i = 2; i < GRID_HEIGHT - 1; i++) {
-        VDP_setTileMapXY(BG_A, borderTileAttr, 0, i);         // Left border (column 0)
-        VDP_setTileMapXY(BG_A, borderTileAttr, GRID_WIDTH - 1, i); // Right border (column 39)
-    }
-    
-    // Set initial snake position (head at START_X, START_Y, body trailing left)
-    snakeLength = SNAKE_START_LENGTH;
-    for (u16 i = 0; i < snakeLength; i++) {
-        snakeBody[i].x = SNAKE_START_X - i; // Place segments left of head
-        snakeBody[i].y = SNAKE_START_Y;
-    }
-    
-    direction = DIR_RIGHT;          // Initial movement direction is right
-    nextDirection = DIR_RIGHT;      // Buffer matches current direction
-    
-    // Create snake head sprite using snake_head_sprite
-    spriteHead = SPR_addSprite(&snake_head_sprite, 
-                             SNAKE_START_X * SNAKE_TILE_SIZE, 
-                             SNAKE_START_Y * SNAKE_TILE_SIZE,
-                             TILE_ATTR(PAL0, TRUE, FALSE, FALSE)); // Use PAL0, high priority
-    
-    // Create initial body sprites using snake_body_sprite
-    for (u16 i = 1; i < snakeLength; i++) {
-        spriteBody[i-1] = SPR_addSprite(&snake_body_sprite, 
-                                      snakeBody[i].x * SNAKE_TILE_SIZE, 
-                                      snakeBody[i].y * SNAKE_TILE_SIZE,
-                                      TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
-    }
-    
-    // Ensure remaining body slots are NULL (no dangling pointers)
-    for (u16 i = snakeLength - 1; i < SNAKE_MAX_LENGTH - 1; i++) {
-        spriteBody[i] = NULL;
-    }
-    
-    generateFood();                 // Place the first food dot
-    spriteFood = SPR_addSprite(&food_sprite, 
-                             food.x * SNAKE_TILE_SIZE, 
-                             food.y * SNAKE_TILE_SIZE,
-                             TILE_ATTR(PAL0, TRUE, FALSE, FALSE)); // Create food sprite
-    
-    // Reset game state variables
-    score = 0;                      // Starting score
-    paused = FALSE;                 // Game starts unpaused
-    prevStartState = TRUE;          // Start button is initially pressed (avoids immediate pause)
-    frameDelay = INITIAL_DELAY;     // Set initial speed
-    frameCount = 0;                 // Reset frame counter
-    
-    // Reset music state
-    melodyIndex = 0;                // Start at first melody note
-    bassIndex = 0;                  // Start at first bass note
-    melodyCounter = 0;              // Reset melody note duration
-    bassCounter = 0;                // Reset bass note duration
-    
-    // Display initial score at y=0 (above border at y=1)
-    char scoreText[20];
-    sprintf(scoreText, "SCORE: %d", score);
-    VDP_drawText(scoreText, 1, 0);  // Place score at top row
-}
-
-// Handles player input from the controller
+// Handles input
 static void handleInput(void) {
-    const u16 joy = JOY_readJoypad(JOY_1); // Read state of Joypad 1
-    const u16 startPressed = joy & BUTTON_START; // Check current state of Start button
+    const u16 joy = JOY_readJoypad(JOY_1);
+    const u16 startPressed = joy & BUTTON_START;
     
-    // Detect Start button press (transition from not pressed to pressed)
     if (startPressed && !prevStartState) {
-        if (gameState == STATE_INTRO) {
-            startGame();            // Start the game from intro screen
-        } else if (gameState == STATE_PLAYING) {
-            togglePause();          // Toggle pause during gameplay
-        } else if (gameState == STATE_GAMEOVER) {
-            showIntroScreen();      // Return to intro screen after game over
-        }
+        if (gameState == STATE_INTRO) startGame();
+        else if (gameState == STATE_PLAYING) togglePause();
+        else if (gameState == STATE_GAMEOVER) showIntroScreen();
     }
-    prevStartState = startPressed;  // Update previous state for next frame
+    prevStartState = startPressed;
     
-    // Process movement only if game is active and not paused
     if (gameState == STATE_PLAYING && !paused) {
         if (joy & BUTTON_UP && direction != DIR_DOWN) nextDirection = DIR_UP;
         else if (joy & BUTTON_RIGHT && direction != DIR_LEFT) nextDirection = DIR_RIGHT;
@@ -347,138 +325,152 @@ static void handleInput(void) {
     }
 }
 
-// Updates game logic: movement, collisions, and food consumption
+// Updates game logic
 static void updateGame(void) {
-    s16 newHeadX = snakeBody[0].x;  // Calculate new head X position
-    s16 newHeadY = snakeBody[0].y;  // Calculate new head Y position
+    s16 newHeadX = snakeBody[0].x;
+    s16 newHeadY = snakeBody[0].y;
     
-    direction = nextDirection;      // Apply the buffered direction
-    switch (direction) {            // Move head based on current direction
+    direction = nextDirection;
+    switch (direction) {
         case DIR_UP:    newHeadY--; break;
         case DIR_RIGHT: newHeadX++; break;
         case DIR_DOWN:  newHeadY++; break;
         case DIR_LEFT:  newHeadX--; break;
     }
     
-    // Check for wall collisions (against borders at 0, 39, 1, 26)
     if (newHeadX <= 0 || newHeadX >= GRID_WIDTH - 1 || newHeadY <= 1 || newHeadY >= GRID_HEIGHT - 1) {
         gameState = STATE_GAMEOVER;
         showGameOver();
         return;
     }
     
-    // Check for self-collision (head hits body)
     if (checkCollision(newHeadX, newHeadY)) {
         gameState = STATE_GAMEOVER;
         showGameOver();
         return;
     }
     
-    // Check if snake eats food (head overlaps food position)
     if (newHeadX == food.x && newHeadY == food.y) {
-        if (snakeLength < SNAKE_MAX_LENGTH) { // Grow snake if not at max length
+        if (snakeLength < SNAKE_MAX_LENGTH) {
             for (u16 i = snakeLength; i > 0; i--) {
-                snakeBody[i] = snakeBody[i - 1]; // Shift body segments forward
+                snakeBody[i] = snakeBody[i - 1];
             }
             if (snakeLength > 1 && !spriteBody[snakeLength-2]) {
-                // Add new body sprite off-screen initially
                 spriteBody[snakeLength-2] = SPR_addSprite(&snake_body_sprite, 
-                                                        -16, -16,
-                                                        TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
+                                                         -16, -16,
+                                                         TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
+                SPR_setAutoTileUpload(spriteBody[snakeLength-2], FALSE);
+                SPR_setFrame(spriteBody[snakeLength-2], 0); // Default horizontal
+                SPR_setVRAMTileIndex(spriteBody[snakeLength-2], bodyVramIndexes[0]);
             }
-            snakeLength++;         // Increase snake length
-        } else {                   // At max length, just shift body (no growth)
+            snakeLength++;
+        } else {
             for (u16 i = snakeLength - 1; i > 0; i--) {
                 snakeBody[i] = snakeBody[i - 1];
             }
         }
         
-        playEatSound();            // Play enhanced eating sound
-        
-        score += 10;               // Add 10 points to score
+        playEatSound();
+        score += 10;
         char scoreText[20];
-        sprintf(scoreText, "SCORE: %d", score);
-        VDP_clearText(1, 0, 20);   // Clear previous score text at y=0
-        VDP_drawText(scoreText, 1, 0); // Display updated score above border
+        sprintf(scoreText, "SCORE: %4d", score);
+        VDP_clearText(1, 0, 20);
+        VDP_drawText(scoreText, 1, 0);
         
-        generateFood();            // Place new food dot
-        SPR_setPosition(spriteFood, 
-                       food.x * SNAKE_TILE_SIZE, 
-                       food.y * SNAKE_TILE_SIZE); // Update food sprite position
+        generateFood();
+        SPR_setPosition(spriteFood, food.x * SNAKE_TILE_SIZE, food.y * SNAKE_TILE_SIZE);
         
-        // Increase game speed every 50 points (decrease delay)
-        if (score % 50 == 0 && frameDelay > MIN_DELAY) {
-            frameDelay--;
-        }
-    } else {                       // No food eaten, just move snake forward
+        if (score % 50 == 0 && frameDelay > MIN_DELAY) frameDelay--;
+    } else {
         for (u16 i = snakeLength - 1; i > 0; i--) {
-            snakeBody[i] = snakeBody[i - 1]; // Shift body segments
+            snakeBody[i] = snakeBody[i - 1];
         }
     }
     
-    // Update head's new position
     snakeBody[0].x = newHeadX;
     snakeBody[0].y = newHeadY;
 }
 
-// Updates sprite positions on the screen
+// Renders sprites with frame selection
 static void drawGame(void) {
-    // Update head sprite position
-    SPR_setPosition(spriteHead, 
-                   snakeBody[0].x * SNAKE_TILE_SIZE, 
-                   snakeBody[0].y * SNAKE_TILE_SIZE);
+    SPR_setPosition(spriteHead, snakeBody[0].x * SNAKE_TILE_SIZE, snakeBody[0].y * SNAKE_TILE_SIZE);
     
-    // Update body sprite positions
+    // Head frames: 0=down, 1=right, 2=up, 3=left
+    // [CHANGE] Removed debug text (e.g., "DOWN", "RIGHT") from upper right
+    switch (direction) {
+        case DIR_DOWN:  
+            SPR_setFrame(spriteHead, 0); 
+            SPR_setVRAMTileIndex(spriteHead, headVramIndexes[0]);
+            break;
+        case DIR_RIGHT: 
+            SPR_setFrame(spriteHead, 1); 
+            SPR_setVRAMTileIndex(spriteHead, headVramIndexes[1]);
+            break;
+        case DIR_UP:    
+            SPR_setFrame(spriteHead, 2); 
+            SPR_setVRAMTileIndex(spriteHead, headVramIndexes[2]);
+            break;
+        case DIR_LEFT:  
+            SPR_setFrame(spriteHead, 3); 
+            SPR_setVRAMTileIndex(spriteHead, headVramIndexes[3]);
+            break;
+    }
+    
+    // Body frames: 0=horizontal (left/right), 1=vertical (up/down)
     for (u16 i = 1; i < snakeLength; i++) {
-        if (spriteBody[i-1]) {      // Check if sprite exists
+        if (spriteBody[i-1]) {
             SPR_setPosition(spriteBody[i-1], 
                            snakeBody[i].x * SNAKE_TILE_SIZE, 
                            snakeBody[i].y * SNAKE_TILE_SIZE);
-        }
-    }
-}
-
-// Generates a new food position within the bordered playfield
-static void generateFood(void) {
-    u16 validPosition = FALSE;      // Flag to track if position is valid
-    u16 attempts = 0;               // Counter to limit random attempts
-    
-    // Try to place food randomly inside borders (1 to 38 for x, 2 to 26 for y)
-    while (!validPosition && attempts < 100) {
-        food.x = (random() % (GRID_WIDTH - 2)) + 1;  // X from 1 to 38
-        food.y = (random() % (GRID_HEIGHT - 3)) + 2; // Y from 2 to 26 (below border at y=1)
-        validPosition = !checkCollision(food.x, food.y); // Check if position is free
-        attempts++;
-    }
-    
-    // Fallback: Place food near center if random placement fails
-    if (!validPosition) {
-        food.x = GRID_WIDTH / 2;
-        food.y = GRID_HEIGHT / 2;
-        if (checkCollision(food.x, food.y)) { // If center is occupied
-            // Scan playfield for an empty spot inside borders
-            for (food.x = 1; food.x < GRID_WIDTH - 1; food.x++) {
-                for (food.y = 2; food.y < GRID_HEIGHT - 1; food.y++) {
-                    if (!checkCollision(food.x, food.y)) {
-                        return; // Found a spot, exit
-                    }
-                }
+            s16 dx = snakeBody[i-1].x - snakeBody[i].x;
+            s16 dy = snakeBody[i-1].y - snakeBody[i].y;
+            if (dx != 0) { // Horizontal movement
+                SPR_setFrame(spriteBody[i-1], 0);
+                SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[0]);
+            } else if (dy != 0) { // Vertical movement
+                SPR_setFrame(spriteBody[i-1], 1);
+                SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[1]);
             }
         }
     }
 }
 
-// Checks if a position collides with the snake's body
-static u16 checkCollision(s16 x, s16 y) {
-    for (u16 i = 0; i < snakeLength; i++) {
-        if (snakeBody[i].x == x && snakeBody[i].y == y) {
-            return TRUE;            // Collision detected
+// Generates new food position
+static void generateFood(void) {
+    u16 validPosition = FALSE;
+    u16 attempts = 0;
+    
+    while (!validPosition && attempts < 100) {
+        food.x = (random() % (GRID_WIDTH - 2)) + 1;
+        food.y = (random() % (GRID_HEIGHT - 3)) + 2;
+        validPosition = !checkCollision(food.x, food.y);
+        attempts++;
+    }
+    
+    if (!validPosition) {
+        food.x = GRID_WIDTH / 2;
+        food.y = GRID_HEIGHT / 2;
+        if (checkCollision(food.x, food.y)) {
+            for (food.x = 1; food.x < GRID_WIDTH - 1; food.x++) {
+                for (food.y = 2; food.y < GRID_HEIGHT - 1; food.y++) {
+                    if (!checkCollision(food.x, food.y)) return;
+                }
+            }
+            gameState = STATE_GAMEOVER;
+            VDP_drawText("YOU WIN!", 16, 10);
         }
     }
-    return FALSE;                   // No collision
 }
 
-// Displays game over message and silences music
+// Checks collision with snake
+static u16 checkCollision(s16 x, s16 y) {
+    for (u16 i = 0; i < snakeLength; i++) {
+        if (snakeBody[i].x == x && snakeBody[i].y == y) return TRUE;
+    }
+    return FALSE;
+}
+
+// Displays game over screen
 static void showGameOver(void) {
     VDP_drawText("GAME OVER", 15, 10);
     VDP_drawText("PRESS START TO PLAY AGAIN", 8, 12);
@@ -488,78 +480,58 @@ static void showGameOver(void) {
     sprintf(scoreText, "%d", score);
     VDP_drawText(scoreText, 19 - (score >= 10 ? (score >= 100 ? (score >= 1000 ? 3 : 2) : 1) : 0), 16);
     
-    // Silence music channels when game ends
     PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
     PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
 }
 
-// Plays an enhanced "chomp" sound when the snake eats food (Channel 0)
+// Plays "chomp" sound
 static void playEatSound(void) {
-    PSG_setEnvelope(0, PSG_ENVELOPE_MAX); // Full volume for sharp "bite"
-    PSG_setFrequency(0, 1000);            // Higher pitch (~1000 Hz) for clarity
-    waitMs(20);                           // Play for 20ms
-    
-    PSG_setEnvelope(0, PSG_ENVELOPE_MAX / 2); // Half volume for "gulp"
-    PSG_setFrequency(0, 400);             // Lower pitch (~400 Hz)
-    waitMs(30);                           // Play for 30ms
-    
-    PSG_setEnvelope(0, PSG_ENVELOPE_MIN); // Mute to end the sound
+    PSG_setEnvelope(0, PSG_ENVELOPE_MAX);
+    PSG_setFrequency(0, 1000);
+    waitMs(20);
+    PSG_setEnvelope(0, PSG_ENVELOPE_MAX / 2);
+    PSG_setFrequency(0, 400);
+    waitMs(30);
+    PSG_setEnvelope(0, PSG_ENVELOPE_MIN);
 }
 
-// Updates chiptune music playback with tempo tied to game speed (Channels 1 and 2)
+// Updates chiptune music
+// [CHANGE] Music stops completely when paused (volume decrease wasn’t working)
 static void updateMusic(void) {
-    if (gameState == STATE_GAMEOVER) { // Stop music if game is over
-        PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
-        PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
+    if (gameState == STATE_GAMEOVER || (gameState == STATE_PLAYING && paused)) {
+        PSG_setEnvelope(1, PSG_ENVELOPE_MIN); // Silence melody
+        PSG_setEnvelope(2, PSG_ENVELOPE_MIN); // Silence bass
         return;
     }
     
-    if (gameState == STATE_PLAYING && paused) { // Quieter music if paused
-        PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
-        PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
-        return;
-    }
+    // Normal playback when unpaused
+    u16 melodyVolume = PSG_ENVELOPE_MAX / 8; // Full volume when playing
+    u16 bassVolume = PSG_ENVELOPE_MAX / 16;
     
-    // Calculate tempo factor - different for intro and gameplay
-    u16 tempoFactor;
-    if (gameState == STATE_INTRO) {
-        tempoFactor = 12;  // Slower on intro screen
-    } else {
-        // Calculate based on frameDelay (scales from 8 to 3)
-        const u16 delay = frameDelay;
-        tempoFactor = (delay * 10) / INITIAL_DELAY; // Integer scaling (10-3.75)
-    }
-    
+    u16 tempoFactor = (gameState == STATE_INTRO) ? 12 : (frameDelay * 10) / INITIAL_DELAY;
     const u16 melodyDuration = (melody[melodyIndex].baseDuration * tempoFactor) / 10;
     const u16 bassDuration = (bass[bassIndex].baseDuration * tempoFactor) / 10;
     
-    // Update melody (Channel 1)
-    if (melodyCounter == 0) {       // Time to play the next note
+    if (melodyCounter == 0) {
         PSG_setFrequency(1, melody[melodyIndex].frequency);
-        PSG_setEnvelope(1, melody[melodyIndex].frequency != NOTE_REST ? 
-                        PSG_ENVELOPE_MAX / 8 : PSG_ENVELOPE_MIN); // Low volume
-        melodyCounter = melodyDuration; // Set dynamic duration
-        melodyIndex = (melodyIndex + 1) % MELODY_SIZE; // Loop through melody
+        PSG_setEnvelope(1, melody[melodyIndex].frequency != NOTE_REST ? melodyVolume : PSG_ENVELOPE_MIN);
+        melodyCounter = melodyDuration;
+        melodyIndex = (melodyIndex + 1) % MELODY_SIZE;
     }
-    melodyCounter--;                // Decrease counter each frame
+    melodyCounter--;
     
-    // Update bass (Channel 2)
-    if (bassCounter == 0) {         // Time to play the next note
+    if (bassCounter == 0) {
         PSG_setFrequency(2, bass[bassIndex].frequency);
-        PSG_setEnvelope(2, bass[bassIndex].frequency != NOTE_REST ? 
-                        PSG_ENVELOPE_MAX / 16 : PSG_ENVELOPE_MIN); // Even lower volume
-        bassCounter = bassDuration;   // Set dynamic duration
-        bassIndex = (bassIndex + 1) % BASS_SIZE; // Loop through bass
+        PSG_setEnvelope(2, bass[bassIndex].frequency != NOTE_REST ? bassVolume : PSG_ENVELOPE_MIN);
+        bassCounter = bassDuration;
+        bassIndex = (bassIndex + 1) % BASS_SIZE;
     }
-    bassCounter--;                  // Decrease counter each frame
+    bassCounter--;
 }
 
-// Toggles pause state and displays/clears "PAUSE" text
+// Toggles pause state
 static void togglePause(void) {
-    paused = !paused;               // Toggle pause state (TRUE <-> FALSE)
-    if (paused) {
-        VDP_drawText("PAUSE", 17, 14); // Display "PAUSE" in center (40/2 - 5/2 = 17, 28/2 = 14)
-    } else {
-        VDP_clearText(17, 14, 5);      // Clear "PAUSE" text (5 characters wide)
-    }
+    paused = !paused;
+    if (paused) VDP_drawText("PAUSE", 17, 14);
+    else VDP_clearText(17, 14, 5);
 }
