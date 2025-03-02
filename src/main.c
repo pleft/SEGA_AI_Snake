@@ -11,8 +11,9 @@
 //    - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
 //    - Body: 16x8 sprite sheet (2 frames: horizontal, vertical).
 //    - Food: Single 8x8 red dot.
-// 3. Audio: Chiptune melody with dynamic tempo (capped), "chomp" sound, game-over tune, stops when paused.
-// 4. Controls: Start toggles states; D-pad moves snake.
+//    - Intro: Custom tilemap from intro.png with text overlay using PAL1.
+// 3. Audio: Chiptune melody with dynamic tempo (capped), "chomp" sound, game-over tune with rest, intro tune, toggleable.
+// 4. Controls: Start toggles states; D-pad moves snake; B toggles music in intro.
 // 5. Technical: PSG audio, optimized math, manual VRAM management for sprites.
 //
 // Updates (Latest):
@@ -22,7 +23,8 @@
 // - Optimized food placement with free tile list.
 // - Capped music tempo for better playback at high speeds.
 // - Optimized collision detection by skipping head self-check.
-// - Enhanced game over with snake disappearance, food disappearance, and tune.
+// - Enhanced game over with snake disappearance, food disappearance, tune, and rest before tune.
+// - Improved intro screen with custom intro.png as IMAGE resource, new PAL1 palette, new tune, music toggle, and removed animation.
 // - Fixed prevStartState initialization bug.
 
 #include <genesis.h>        // SGDK library header
@@ -92,6 +94,7 @@ static u16 frameCount;                    // Frame counter
 static u16 paused;                        // Pause flag
 static u16 prevStartState;                // Start button state
 static u16 introAnimFrame;                // Intro animation counter
+static u16 musicEnabled = TRUE;           // Music toggle state
 
 // Music state variables
 static Note melody[MELODY_SIZE] = {
@@ -138,15 +141,43 @@ int main() {
     JOY_init();
     SPR_init();
     
-    // Set up palette
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000)); // Black
-    PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000)); // Dark green
-    PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000)); // Red
-    PAL_setColor(3, RGB24_TO_VDPCOLOR(0xC0C0C0)); // Grey
-    PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000)); // Dark red
+    // Set up PAL0 for gameplay (unchanged)
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));  // Black
+    PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000));  // Dark Green
+    PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000));  // Red
+    PAL_setColor(3, RGB24_TO_VDPCOLOR(0xC0C0C0));  // Grey
+    PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000));  // Dark Red
+    PAL_setColor(5, RGB24_TO_VDPCOLOR(0x000080));  // Dark Blue (unused in PAL0 gameplay)
+    PAL_setColor(6, RGB24_TO_VDPCOLOR(0x00A000));  // Medium Green (unused in PAL0 gameplay)
+    PAL_setColor(7, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand (unused in PAL0 gameplay)
+    PAL_setColor(8, RGB24_TO_VDPCOLOR(0xA52A2A));  // Brown
+    PAL_setColor(9, RGB24_TO_VDPCOLOR(0xFFD700));  // Gold
+    PAL_setColor(10, RGB24_TO_VDPCOLOR(0xCD7F32)); // Bronze
+    PAL_setColor(11, RGB24_TO_VDPCOLOR(0xFFFFAA)); // Pale Yellow
+    PAL_setColor(12, RGB24_TO_VDPCOLOR(0xD2B48C)); // Light Brown
+    PAL_setColor(13, RGB24_TO_VDPCOLOR(0xF5DEB3)); // Tan
+    PAL_setColor(14, RGB24_TO_VDPCOLOR(0xFFFF00)); // Yellow
     PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); // White
     
-    VDP_setTextPalette(PAL0);
+    // Set up PAL1 for intro screen
+    PAL_setColor(16, RGB24_TO_VDPCOLOR(0x000083));
+    PAL_setColor(17, RGB24_TO_VDPCOLOR(0x260081));
+    PAL_setColor(18, RGB24_TO_VDPCOLOR(0x3e1179)); 
+    PAL_setColor(19, RGB24_TO_VDPCOLOR(0x641a69)); 
+    PAL_setColor(20, RGB24_TO_VDPCOLOR(0xfe0000)); 
+    PAL_setColor(21, RGB24_TO_VDPCOLOR(0x3b329c)); 
+    PAL_setColor(22, RGB24_TO_VDPCOLOR(0xa12c28));
+    PAL_setColor(23, RGB24_TO_VDPCOLOR(0x1f5ba7)); 
+    PAL_setColor(24, RGB24_TO_VDPCOLOR(0x027a00));
+    PAL_setColor(25, RGB24_TO_VDPCOLOR(0x1a9a0f)); 
+    PAL_setColor(26, RGB24_TO_VDPCOLOR(0xce7e33)); 
+    PAL_setColor(27, RGB24_TO_VDPCOLOR(0xd8b228)); 
+    PAL_setColor(28, RGB24_TO_VDPCOLOR(0xd0b18f)); 
+    PAL_setColor(29, RGB24_TO_VDPCOLOR(0xe0b889)); 
+    PAL_setColor(30, RGB24_TO_VDPCOLOR(0xfdd800)); 
+    PAL_setColor(31, RGB24_TO_VDPCOLOR(0xf6ddb4)); 
+    
+    VDP_setTextPalette(PAL0); // Text uses PAL0 for gameplay consistency
     VDP_setTextPriority(1);
     
     PSG_reset();
@@ -157,7 +188,7 @@ int main() {
         handleInput();
         if (gameState == STATE_INTRO) {
             updateIntroScreen();
-            SPR_update(); // Still update sprites for intro animation if any
+            SPR_update();
         }
         else if (gameState == STATE_PLAYING) {
             frameCount++;
@@ -165,10 +196,9 @@ int main() {
                 frameCount = 0;
                 updateGame();
             }
-            drawGame();    // Only draw during playing state
-            SPR_update();  // Only update sprites during playing state
+            drawGame();
+            SPR_update();
         }
-        // In STATE_GAMEOVER, sprites are managed by showGameOver(), so skip drawGame/SPR_update
         updateMusic();
         SYS_doVBlankProcess();
     }
@@ -187,16 +217,20 @@ static void initGame(void) {
     if (spriteFood) SPR_releaseSprite(spriteFood);
     
     VDP_clearPlane(BG_A, TRUE);
+    VDP_clearPlane(BG_B, TRUE);
+    
+    // Start VRAM after intro image tiles
+    u16 vramIndex = TILE_USER_INDEX + intro.tileset->numTile;
     
     // Draw border
     static const u32 borderTile[8] = { 
         0x33333333, 0x33333333, 0x33333333, 0x33333333,
         0x33333333, 0x33333333, 0x33333333, 0x33333333
     };
-    VDP_loadTileData(borderTile, TILE_USER_INDEX, 1, DMA);
-    u16 vramIndex = TILE_USER_INDEX + 1;
+    VDP_loadTileData(borderTile, vramIndex, 1, DMA);
+    const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, vramIndex);
+    vramIndex += 1;
     
-    const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, TILE_USER_INDEX);
     for (u16 i = 0; i < GRID_WIDTH; i++) {
         VDP_setTileMapXY(BG_A, borderTileAttr, i, 1);
         VDP_setTileMapXY(BG_A, borderTileAttr, i, GRID_HEIGHT - 1);
@@ -270,7 +304,7 @@ static void initGame(void) {
     
     score = 0;
     paused = FALSE;
-    prevStartState = FALSE; // [FIX] Start unpressed to avoid skipping first toggle
+    prevStartState = FALSE;
     frameDelay = INITIAL_DELAY;
     frameCount = 0;
     
@@ -284,13 +318,24 @@ static void initGame(void) {
     VDP_drawText(scoreText, 1, 0);
 }
 
-// Displays intro screen
+// Displays intro screen with intro.png using PAL1 and text on BG_A
 static void showIntroScreen(void) {
     VDP_clearPlane(BG_A, TRUE);
-    VDP_drawText("AI SNAKE", 15, 8);
-    VDP_drawText("MEGA DRIVE EDITION", 11, 10);
-    VDP_drawText("PRESS START TO PLAY", 11, 16);
-    VDP_drawText("USE D-PAD TO MOVE", 12, 18);
+    VDP_clearPlane(BG_B, TRUE);
+    
+    // Load the intro image tileset into VRAM
+    VDP_loadTileSet(intro.tileset, TILE_USER_INDEX, DMA);
+    
+    // Set the intro tilemap onto BG_B using PAL1 (40x28 tiles = 320x224 pixels)
+    VDP_setMapEx(BG_B, intro.tilemap, TILE_ATTR_FULL(PAL1, FALSE, FALSE, FALSE, TILE_USER_INDEX), 
+                 0, 0,    // Destination x, y (top-left corner of BG_B)
+                 0, 0,    // Source x, y (top-left corner of tilemap)
+                 40, 28); // Width, height in tiles (full 320x224 image)
+    
+    // Draw text on BG_A using PAL0 (gameplay palette)
+    VDP_drawText("AI SNAKE", 15, 2);
+    VDP_drawText("PRESS START TO PLAY", 11, 6);
+    VDP_drawText("PRESS B TO TOGGLE MUSIC", 9, 10);
     
     introAnimFrame = 0;
     gameState = STATE_INTRO;
@@ -302,23 +347,17 @@ static void showIntroScreen(void) {
     
     score = 0;
     paused = FALSE;
-    prevStartState = FALSE; // [FIX] Consistent with initGame
+    prevStartState = FALSE;
+    musicEnabled = TRUE; // Reset to on when showing intro
 }
 
-// Updates intro animations
+// Updates intro screen (blinking text only)
 static void updateIntroScreen(void) {
     introAnimFrame++;
     if (introAnimFrame % 60 < 30) {
-        VDP_drawText("PRESS START TO PLAY", 11, 16);
+        VDP_drawText("PRESS START TO PLAY", 11, 6);
     } else {
-        VDP_clearText(11, 16, 19);
-    }
-    
-    if (introAnimFrame % 15 == 0) {
-        u16 x = (introAnimFrame / 15) % 28;
-        u16 y = 22 + ((x % 4) < 2 ? 0 : 1);
-        VDP_clearTextArea(10, 22, 20, 2);
-        VDP_drawText("O-", 11 + x, y);
+        VDP_clearText(11, 6, 19);
     }
 }
 
@@ -332,6 +371,7 @@ static void startGame(void) {
 static void handleInput(void) {
     const u16 joy = JOY_readJoypad(JOY_1);
     const u16 startPressed = joy & BUTTON_START;
+    const u16 bPressed = joy & BUTTON_B;
     
     if (startPressed && !prevStartState) {
         if (gameState == STATE_INTRO) startGame();
@@ -339,6 +379,17 @@ static void handleInput(void) {
         else if (gameState == STATE_GAMEOVER) showIntroScreen();
     }
     prevStartState = startPressed;
+    
+    // Toggle music on B press in intro state
+    static u16 prevBState = FALSE;
+    if (gameState == STATE_INTRO && bPressed && !prevBState) {
+        musicEnabled = !musicEnabled;
+        if (!musicEnabled) {
+            PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
+            PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
+        }
+    }
+    prevBState = bPressed;
     
     if (gameState == STATE_PLAYING && !paused) {
         if (joy & BUTTON_UP && direction != DIR_DOWN) nextDirection = DIR_UP;
@@ -386,7 +437,7 @@ static void updateGame(void) {
                                                          -16, -16,
                                                          TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
                 if (!spriteBody[snakeLength-2]) {
-                    snakeLength--; // [NEW] Cap length if allocation fails
+                    snakeLength--; // Cap length if allocation fails
                     VDP_drawText("SPRITE LIMIT!", 14, 10);
                     return;
                 }
@@ -467,7 +518,7 @@ static void drawGame(void) {
 
 // Generates new food position using free tile list
 static void generateFood(void) {
-    Point freeTiles[(GRID_WIDTH - 2) * (GRID_HEIGHT - 3)]; // [NEW] Array of free positions
+    Point freeTiles[(GRID_WIDTH - 2) * (GRID_HEIGHT - 3)]; // Array of free positions
     u16 freeCount = 0;
     
     // Collect all free positions
@@ -494,7 +545,7 @@ static void generateFood(void) {
 
 // Checks collision with snake (optimized to skip head)
 static u16 checkCollision(s16 x, s16 y) {
-    for (u16 i = 1; i < snakeLength; i++) { // [NEW] Skip i=0 (head)
+    for (u16 i = 1; i < snakeLength; i++) { // Skip i=0 (head)
         if (snakeBody[i].x == x && snakeBody[i].y == y) return TRUE;
     }
     return FALSE;
@@ -591,7 +642,7 @@ static void playEatSound(void) {
     PSG_setEnvelope(0, PSG_ENVELOPE_MIN);
 }
 
-// Updates chiptune music with tempo cap
+// Updates chiptune music with tempo cap and intro-specific tune
 static void updateMusic(void) {
     if (gameState == STATE_GAMEOVER || (gameState == STATE_PLAYING && paused)) {
         PSG_setEnvelope(1, PSG_ENVELOPE_MIN); // Silence melody
@@ -599,18 +650,34 @@ static void updateMusic(void) {
         return;
     }
     
+    if (!musicEnabled) {
+        PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
+        PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
+        return;
+    }
+    
     // Normal playback when unpaused
     u16 melodyVolume = PSG_ENVELOPE_MAX / 8; // Full volume when playing
     u16 bassVolume = PSG_ENVELOPE_MAX / 16;
     
-    // [NEW] Cap tempo to prevent chaotic speedup
+    // New catchy intro tune (E4-G4-A4-G4 pattern, upbeat)
+    static Note introMelody[MELODY_SIZE] = {
+        {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 8},
+        {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8},
+        {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8},
+        {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8}
+    };
+    
+    // Use intro tune in intro state, regular melody in playing state
+    Note* currentMelody = (gameState == STATE_INTRO) ? introMelody : melody;
+    
     u16 tempoFactor = (gameState == STATE_INTRO) ? 12 : max((frameDelay * 10) / INITIAL_DELAY, MAX_TEMPO_FACTOR);
-    const u16 melodyDuration = (melody[melodyIndex].baseDuration * tempoFactor) / 10;
+    const u16 melodyDuration = (currentMelody[melodyIndex].baseDuration * tempoFactor) / 10;
     const u16 bassDuration = (bass[bassIndex].baseDuration * tempoFactor) / 10;
     
     if (melodyCounter == 0) {
-        PSG_setFrequency(1, melody[melodyIndex].frequency);
-        PSG_setEnvelope(1, melody[melodyIndex].frequency != NOTE_REST ? melodyVolume : PSG_ENVELOPE_MIN);
+        PSG_setFrequency(1, currentMelody[melodyIndex].frequency);
+        PSG_setEnvelope(1, currentMelody[melodyIndex].frequency != NOTE_REST ? melodyVolume : PSG_ENVELOPE_MIN);
         melodyCounter = melodyDuration;
         melodyIndex = (melodyIndex + 1) % MELODY_SIZE;
     }
