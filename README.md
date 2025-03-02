@@ -1,33 +1,34 @@
 # SEGA_AI_Snake
 Snake Game for Sega Mega Drive using SGDK 2.00 and AI (Grok and Claude)
 
+![AI Snake](/res/intro.png)
+
 Overview:
 This is a classic Snake game implemented for the Sega Mega Drive using the SGDK 2.00 library.
 The player controls a snake that grows by eating red food dots, increasing in speed and difficulty.
 Features a bordered playfield, 8-bit style chiptune music, and sound effects.
 
 Main Features:
-1. Gameplay:
-- Snake moves in four directions (up, right, down, left) using the D-pad.
-- Eating food increases score by 10 and lengthens the snake.
-- Game ends on collision with borders or self.
-- Speed increases every 50 points (frame delay decreases from 8 to 3).
+1. Gameplay: Snake moves via D-pad, grows on eating food (score +10), ends on collision.
 2. Visuals:
-- Separate sprites for snake head (`snake_head_sprite`) and body (`snake_body_sprite`).
-- Red food dot (`food_sprite`) spawns randomly within borders.
-- Grey borders frame the 38x26 tile playfield (total grid: 40x28).
-- Score displayed above the top border at y=0.
-- New intro screen with "SNAKE GAME" title and "PRESS START" prompt.
-3. Audio:
-- Enhanced "chomp" sound on eating (Channel 0: 1000 Hz → 400 Hz, sharp and audible).
-- Simple 8-bit style melody loop that sounds like classic arcade games.
-- Music tempo increases as snake speed rises; volume kept low to prioritize chomp.
-4. Controls:
-- Start button begins game from intro screen, pauses/unpauses during gameplay, or restarts when game over.
-- "PAUSE" text appears centered when paused.
-5. Technical:
-- Uses PSG for sound: Channel 0 (eating), 1 (melody), 2 (bass).
-- Optimized with integer math, static variables, and minimal global access.
+   - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
+   - Body: 16x8 sprite sheet (2 frames: horizontal, vertical).
+   - Food: Single 8x8 red dot.
+   - Intro: Custom tilemap from intro.png with text overlay using PAL1.
+3. Audio: Chiptune melody with dynamic tempo (capped), "chomp" sound, game-over tune with rest, intro tune, toggleable.
+4. Controls: Start toggles states; D-pad moves snake; B toggles music in intro.
+5. Technical: PSG audio, optimized math, manual VRAM management for sprites.
+
+Updates (Latest):
+- Removed debug direction text from upper right corner (previously at 30, 0).
+- Pause now stops music completely (volume decrease was ineffective).
+- Added sprite allocation checks to prevent VDP overflow.
+- Optimized food placement with free tile list.
+- Capped music tempo for better playback at high speeds.
+- Optimized collision detection by skipping head self-check.
+- Enhanced game over with snake disappearance, food disappearance, tune, and rest before tune.
+- Improved intro screen with custom intro.png as IMAGE resource, new PAL1 palette, new tune, music toggle, and removed animation.
+- Fixed prevStartState initialization bug.
 
 ## Build and run instructions
 
