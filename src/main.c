@@ -141,16 +141,16 @@ int main() {
     JOY_init();
     SPR_init();
     
-    // Set up PAL0 for gameplay (unchanged)
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));  // Black
+    // Set up PAL0 for gameplay (background starts as black for intro)
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));  // Black (for intro)
     PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000));  // Dark Green
     PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000));  // Red
     PAL_setColor(3, RGB24_TO_VDPCOLOR(0xC0C0C0));  // Grey
     PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000));  // Dark Red
-    PAL_setColor(5, RGB24_TO_VDPCOLOR(0x000080));  // Dark Blue (unused in PAL0 gameplay)
-    PAL_setColor(6, RGB24_TO_VDPCOLOR(0x00A000));  // Medium Green (unused in PAL0 gameplay)
-    PAL_setColor(7, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand (unused in PAL0 gameplay)
-    PAL_setColor(8, RGB24_TO_VDPCOLOR(0xA52A2A));  // Brown
+    PAL_setColor(5, RGB24_TO_VDPCOLOR(0x000080));  // Dark Blue
+    PAL_setColor(6, RGB24_TO_VDPCOLOR(0x00A000));  // Medium Green
+    PAL_setColor(7, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand
+    PAL_setColor(8, RGB24_TO_VDPCOLOR(0xA52A2A));  // Brown (for border)
     PAL_setColor(9, RGB24_TO_VDPCOLOR(0xFFD700));  // Gold
     PAL_setColor(10, RGB24_TO_VDPCOLOR(0xCD7F32)); // Bronze
     PAL_setColor(11, RGB24_TO_VDPCOLOR(0xFFFFAA)); // Pale Yellow
@@ -208,6 +208,9 @@ int main() {
 
 // Initializes game state and sprites
 static void initGame(void) {
+    // Set background to sand for gameplay
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand
+
     // Clean up existing sprites
     if (spriteHead) SPR_releaseSprite(spriteHead);
     for (u16 i = 0; i < SNAKE_MAX_LENGTH - 1; i++) {
@@ -222,10 +225,10 @@ static void initGame(void) {
     // Start VRAM after intro image tiles
     u16 vramIndex = TILE_USER_INDEX + intro.tileset->numTile;
     
-    // Draw border
+    // Draw border (updated to brown)
     static const u32 borderTile[8] = { 
-        0x33333333, 0x33333333, 0x33333333, 0x33333333,
-        0x33333333, 0x33333333, 0x33333333, 0x33333333
+        0x88888888, 0x88888888, 0x88888888, 0x88888888,
+        0x88888888, 0x88888888, 0x88888888, 0x88888888
     };
     VDP_loadTileData(borderTile, vramIndex, 1, DMA);
     const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, vramIndex);
@@ -320,6 +323,9 @@ static void initGame(void) {
 
 // Displays intro screen with intro.png using PAL1 and text on BG_A
 static void showIntroScreen(void) {
+    // Reset background to black for intro
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));  // Black
+    
     VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
     
