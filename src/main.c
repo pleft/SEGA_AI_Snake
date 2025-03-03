@@ -1,25 +1,25 @@
 // Snake Game for Sega Mega Drive using SGDK 2.00
-// Optimized with maze walls and fast food placement as of March 03, 2025
+// Enhanced with custom wall/sand tiles, dark green text, and updated title as of March 03, 2025
 //
 // Overview:
-// A classic Snake game featuring a random maze playfield. The snake grows by eating food, ends on collision with
-// borders, maze walls, or itself, and includes chiptune music and an intro screen. Food placement is optimized
-// using a precomputed free tile list for O(1) performance.
+// A classic Snake game with a maze playfield, custom PNG tiles for walls and sand, and optimized food placement.
+// The snake grows by eating food, navigates a maze, and ends on collision with walls or itself.
 //
 // Main Features:
-// 1. Gameplay: D-pad controls snake movement; grows on food (score +10); ends on collision.
+// 1. Gameplay: D-pad controls snake movement; grows on food (score +10); ends on collision with borders, maze walls, or self.
 // 2. Visuals:
 //    - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
 //    - Body: 16x8 sprite sheet (2 frames: horizontal, vertical).
 //    - Food: 8x8 red dot.
-//    - Maze: Random brown wall segments (PAL0 index 8, matches borders).
+//    - Playfield: Custom sand tile (sand.png) background, custom wall tiles (wall.png) for borders and maze.
+//    - Text: Dark green (PAL0 index 15) for score, intro, pause, and game-over screens.
 //    - Intro: Custom tilemap from intro.png with PAL1.
-// 3. Audio: Chiptune melody, intro tune, "chomp" sound, game-over tune with rest, toggleable.
-// 4. Controls: Start toggles states/pause; D-pad moves; B toggles music in intro.
-// 5. Technical: PSG audio, sprite allocation checks, free tile list for fast food placement.
+// 3. Audio: Chiptune melody with capped tempo, intro tune, "chomp" sound, game-over tune with rest, toggleable.
+// 4. Controls: Start toggles states or pauses; D-pad moves snake; B toggles music in intro.
+// 5. Technical: PSG audio, sprite allocation checks, free tile list for O(1) food placement, manual VRAM management.
 
-#include <genesis.h>        // SGDK library header
-#include "resource.h"       // Generated sprite resources (snake_head_sprite, snake_body_sprite, food_sprite, intro)
+#include <genesis.h>
+#include "resource.h"
 
 // Game constants
 #define GRID_WIDTH 40          // Total grid width in tiles (including borders)
@@ -27,19 +27,19 @@
 #define SNAKE_START_X 20       // Snake head’s starting X position
 #define SNAKE_START_Y 14       // Snake head’s starting Y position
 #define SNAKE_START_LENGTH 3   // Initial snake length
-#define SNAKE_MAX_LENGTH 80    // Max snake length (limited by VDP sprite capacity: 80 sprites)
+#define SNAKE_MAX_LENGTH 80    // Maximum snake length (limited by VDP sprite capacity: 80 sprites)
 #define INITIAL_DELAY 8        // Initial frame delay between updates (slower speed)
 #define MIN_DELAY 3            // Minimum frame delay (faster speed as score increases)
 #define SNAKE_TILE_SIZE 8      // Sprite tile size (8x8 pixels)
 #define MAX_TEMPO_FACTOR 6     // Minimum tempo factor to cap music speed
-#define MAX_WALLS 50           // Max number of maze wall segments (each up to 5 tiles)
-#define MAX_FREE_TILES ((GRID_WIDTH - 2) * (GRID_HEIGHT - 3)) // Max free tiles: 38x25 = 950
+#define MAX_WALLS 50           // Maximum number of maze wall segments (each up to 5 tiles)
+#define MAX_FREE_TILES ((GRID_WIDTH - 2) * (GRID_HEIGHT - 3)) // Maximum free tiles: 38x25 = 950
 
 // Snake directions (correspond to head sprite frames)
-#define DIR_UP 0               // Up (frame 2)
-#define DIR_RIGHT 1            // Right (frame 1)
-#define DIR_DOWN 2             // Down (frame 0)
-#define DIR_LEFT 3             // Left (frame 3)
+#define DIR_UP 0               // Up direction (frame 2)
+#define DIR_RIGHT 1            // Right direction (frame 1)
+#define DIR_DOWN 2             // Down direction (frame 0)
+#define DIR_LEFT 3             // Left direction (frame 3)
 
 // Game states
 #define STATE_INTRO 0          // Intro screen state
@@ -75,7 +75,7 @@ typedef struct {
 
 // Game state variables
 static Point snakeBody[SNAKE_MAX_LENGTH]; // Snake segments (head at index 0)
-static u16 snakeLength;                   // Current snake length
+static u16 snakeLength;                   // Current length of the snake
 static u16 direction;                     // Current movement direction
 static u16 nextDirection;                 // Buffered next direction from input
 static Point food;                        // Current food position
@@ -110,34 +110,36 @@ static u16 bassIndex = 0;                 // Current bass note index
 static u16 melodyCounter = 0;             // Frames remaining for current melody note
 static u16 bassCounter = 0;               // Frames remaining for current bass note
 
-// Sprite engine objects
+// Sprite and tile objects
 static Sprite* spriteHead = NULL;         // Head sprite (4 animation frames)
 static Sprite* spriteBody[SNAKE_MAX_LENGTH - 1]; // Body sprites (2 frames: horizontal, vertical)
 static Sprite* spriteFood = NULL;         // Food sprite (single frame)
 static u16 headVramIndexes[4];            // VRAM tile indices for head frames
 static u16 bodyVramIndexes[2];            // VRAM tile indices for body frames
+static u16 wallVramIndex;                 // VRAM index for wall tile
+static u16 sandVramIndex;                 // VRAM index for sand tile
 
 // Function prototypes
-static void initGame(void);               // Initializes game state and sprites
-static void showIntroScreen(void);        // Displays intro screen
+static void initGame(void);               // Initializes game state, sprites, and tiles
+static void showIntroScreen(void);        // Displays intro screen with updated title
 static void updateIntroScreen(void);      // Updates intro screen animation
-static void startGame(void);              // Starts gameplay
-static void handleInput(void);            // Processes player input
-static void updateGame(void);             // Updates game logic
-static void drawGame(void);               // Renders sprites
+static void startGame(void);              // Transitions to gameplay state
+static void handleInput(void);            // Processes player input from joypad
+static void updateGame(void);             // Updates game logic (movement, collisions, food)
+static void drawGame(void);               // Renders game sprites
 static void generateFood(void);           // Places new food using free tile list
-static u16 checkCollision(s16 x, s16 y);  // Checks for collisions with snake body or walls
+static u16 checkCollision(s16 x, s16 y);  // Checks collisions with snake body or walls
 static void showGameOver(void);           // Displays game over screen with animation
 static void playEatSound(void);           // Plays food-eating sound effect
-static void togglePause(void);            // Toggles pause state
+static void togglePause(void);            // Toggles pause state with tile restoration
 static void updateMusic(void);            // Updates background music playback
 
-// Main game loop
+// Main function: Entry point and game loop
 int main() {
-    JOY_init();          // Initialize joypad input system
-    SPR_init();          // Initialize sprite engine
+    JOY_init();                           // Initialize joypad input system
+    SPR_init();                           // Initialize sprite engine
     
-    // Set up PAL0 for gameplay (initially black for intro)
+    // Set up PAL0 for gameplay (black intro background initially)
     PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));  // Black (intro background)
     PAL_setColor(1, RGB24_TO_VDPCOLOR(0x008000));  // Dark Green (snake)
     PAL_setColor(2, RGB24_TO_VDPCOLOR(0xFF0000));  // Red (food)
@@ -145,15 +147,15 @@ int main() {
     PAL_setColor(4, RGB24_TO_VDPCOLOR(0x800000));  // Dark Red (unused)
     PAL_setColor(5, RGB24_TO_VDPCOLOR(0x000080));  // Dark Blue (unused)
     PAL_setColor(6, RGB24_TO_VDPCOLOR(0x00A000));  // Medium Green (unused)
-    PAL_setColor(7, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand (gameplay background)
-    PAL_setColor(8, RGB24_TO_VDPCOLOR(0xA52A2A));  // Brown (border & maze walls)
+    PAL_setColor(7, RGB24_TO_VDPCOLOR(0xDEB887));  // Sand (gameplay base)
+    PAL_setColor(8, RGB24_TO_VDPCOLOR(0xA52A2A));  // Brown (wall base)
     PAL_setColor(9, RGB24_TO_VDPCOLOR(0xFFD700));  // Gold (unused)
     PAL_setColor(10, RGB24_TO_VDPCOLOR(0xCD7F32)); // Bronze (unused)
     PAL_setColor(11, RGB24_TO_VDPCOLOR(0xFFFFAA)); // Pale Yellow (unused)
     PAL_setColor(12, RGB24_TO_VDPCOLOR(0xD2B48C)); // Light Brown (unused)
     PAL_setColor(13, RGB24_TO_VDPCOLOR(0xF5DEB3)); // Tan (unused)
     PAL_setColor(14, RGB24_TO_VDPCOLOR(0xFFFF00)); // Yellow (unused)
-    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); // White (text)
+    PAL_setColor(15, RGB24_TO_VDPCOLOR(0x008000)); // Dark Green (text)
     
     // Set up PAL1 for intro screen
     PAL_setColor(16, RGB24_TO_VDPCOLOR(0x000083));
@@ -173,17 +175,17 @@ int main() {
     PAL_setColor(30, RGB24_TO_VDPCOLOR(0xfdd800));
     PAL_setColor(31, RGB24_TO_VDPCOLOR(0xf6ddb4));
     
-    VDP_setTextPalette(PAL0); // Text uses PAL0 (white on black/intro, sand/gameplay)
-    VDP_setTextPriority(1);   // Text renders on top
-    PSG_reset();              // Reset PSG audio channels
+    VDP_setTextPalette(PAL0);         // Set text to use PAL0 (dark green at index 15)
+    VDP_setTextPriority(1);           // Text renders above sprites and background
+    PSG_reset();                      // Reset PSG audio channels
     
-    showIntroScreen();        // Show intro screen on startup
+    showIntroScreen();                // Display intro screen on startup
     
-    while (1) {               // Main game loop
-        handleInput();        // Handle player input
+    while (1) {                       // Infinite game loop
+        handleInput();                // Process player input
         if (gameState == STATE_INTRO) {
-            updateIntroScreen(); // Animate intro screen
-            SPR_update();        // Update sprite engine
+            updateIntroScreen();      // Update intro screen animation
+            SPR_update();             // Update sprite engine
         }
         else if (gameState == STATE_PLAYING) {
             frameCount++;
@@ -191,19 +193,19 @@ int main() {
                 frameCount = 0;
                 updateGame();
             }
-            drawGame();          // Render game state
-            SPR_update();        // Update sprite engine
+            drawGame();               // Render game state
+            SPR_update();             // Update sprite engine
         }
-        updateMusic();        // Update music playback
-        SYS_doVBlankProcess(); // Process V-blank (sync to 60 FPS)
+        updateMusic();                // Update music playback
+        SYS_doVBlankProcess();        // Sync to V-blank (60 FPS)
     }
     
-    return 0;
+    return 0;                         // Never reached due to infinite loop
 }
 
-// Initializes game state, sprites, borders, maze, and free tile list
+// Initializes game state, sprites, and tiled playfield
 static void initGame(void) {
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887));  // Set gameplay background to sand
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887)); // Set gameplay background to sand color
     
     // Clean up any existing sprites
     if (spriteHead) SPR_releaseSprite(spriteHead);
@@ -213,42 +215,50 @@ static void initGame(void) {
     }
     if (spriteFood) SPR_releaseSprite(spriteFood);
     
-    VDP_clearPlane(BG_A, TRUE); // Clear background planes to sand color
+    VDP_clearPlane(BG_A, TRUE);       // Clear background planes to sand color
     VDP_clearPlane(BG_B, TRUE);
     
-    // Define brown border/maze tile (color index 8)
-    static const u32 borderTile[8] = {
-        0x88888888, 0x88888888, 0x88888888, 0x88888888,
-        0x88888888, 0x88888888, 0x88888888, 0x88888888
-    };
-    u16 vramIndex = TILE_USER_INDEX + intro.tileset->numTile; // Start VRAM after intro tiles
-    VDP_loadTileData(borderTile, vramIndex, 1, DMA);
-    const u16 borderTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, vramIndex);
-    vramIndex += 1;
+    // Load wall tile from wall.png
+    u16 vramIndex = TILE_USER_INDEX + intro.tileset->numTile;
+    VDP_loadTileSet(&wall_tileset, vramIndex, DMA);
+    wallVramIndex = vramIndex;
+    const u16 wallTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, wallVramIndex);
+    vramIndex += wall_tileset.numTile;
     
-    // Draw outer borders
+    // Load sand tile from sand.png and tile the playfield
+    VDP_loadTileSet(&sand_tileset, vramIndex, DMA);
+    sandVramIndex = vramIndex;
+    const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
+    vramIndex += sand_tileset.numTile;
+    for (u16 y = 2; y < GRID_HEIGHT - 1; y++) {
+        for (u16 x = 1; x < GRID_WIDTH - 1; x++) {
+            VDP_setTileMapXY(BG_A, sandTileAttr, x, y); // Tile playfield with sand
+        }
+    }
+    
+    // Draw outer borders with wall tiles
     for (u16 i = 0; i < GRID_WIDTH; i++) {
-        VDP_setTileMapXY(BG_A, borderTileAttr, i, 1);         // Top border
-        VDP_setTileMapXY(BG_A, borderTileAttr, i, GRID_HEIGHT - 1); // Bottom border
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, 1);
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, GRID_HEIGHT - 1);
     }
     for (u16 i = 2; i < GRID_HEIGHT - 1; i++) {
-        VDP_setTileMapXY(BG_A, borderTileAttr, 0, i);         // Left border
-        VDP_setTileMapXY(BG_A, borderTileAttr, GRID_WIDTH - 1, i); // Right border
+        VDP_setTileMapXY(BG_A, wallTileAttr, 0, i);
+        VDP_setTileMapXY(BG_A, wallTileAttr, GRID_WIDTH - 1, i);
     }
     
-    // Generate random maze walls (10 segments, 3-5 tiles each)
+    // Generate random maze walls with wall tiles
     wallCount = 0;
-    u16 numWalls = 10;
+    u16 numWalls = 10;                // Number of maze segments
     for (u16 w = 0; w < numWalls && wallCount < MAX_WALLS * 5; w++) {
         u16 isVertical = random() % 2; // 0=horizontal, 1=vertical
-        u16 length = 3 + (random() % 3); // 3-5 tiles
+        u16 length = 3 + (random() % 3); // 3-5 tiles per segment
         u16 x, y;
         if (isVertical) {
             x = 2 + (random() % (GRID_WIDTH - 4)); // Avoid borders
             y = 3 + (random() % (GRID_HEIGHT - length - 4)); // Leave gaps
             for (u16 i = 0; i < length && y + i < GRID_HEIGHT - 1 && wallCount < MAX_WALLS * 5; i++) {
-                if (x != SNAKE_START_X || y + i != SNAKE_START_Y) { // Avoid snake start
-                    VDP_setTileMapXY(BG_A, borderTileAttr, x, y + i);
+                if (x != SNAKE_START_X || y + i != SNAKE_START_Y) { // Avoid snake start position
+                    VDP_setTileMapXY(BG_A, wallTileAttr, x, y + i);
                     mazeWalls[wallCount].x = x;
                     mazeWalls[wallCount].y = y + i;
                     wallCount++;
@@ -258,8 +268,8 @@ static void initGame(void) {
             x = 2 + (random() % (GRID_WIDTH - length - 3)); // Avoid borders
             y = 3 + (random() % (GRID_HEIGHT - 5)); // Leave gaps
             for (u16 i = 0; i < length && x + i < GRID_WIDTH - 1 && wallCount < MAX_WALLS * 5; i++) {
-                if (x + i != SNAKE_START_X || y != SNAKE_START_Y) { // Avoid snake start
-                    VDP_setTileMapXY(BG_A, borderTileAttr, x + i, y);
+                if (x + i != SNAKE_START_X || y != SNAKE_START_Y) { // Avoid snake start position
+                    VDP_setTileMapXY(BG_A, wallTileAttr, x + i, y);
                     mazeWalls[wallCount].x = x + i;
                     mazeWalls[wallCount].y = y;
                     wallCount++;
@@ -301,8 +311,8 @@ static void initGame(void) {
             }
         }
     }
-    direction = DIR_RIGHT;  // Start moving right
-    nextDirection = DIR_RIGHT; // Buffer matches initial direction
+    direction = DIR_RIGHT;            // Initial direction is right
+    nextDirection = DIR_RIGHT;        // Buffer matches initial direction
     
     // Load head sprite frames (32x8, 4 directions)
     Animation* headAnim = snake_head_sprite.animations[0];
@@ -328,7 +338,7 @@ static void initGame(void) {
                               SNAKE_START_Y * SNAKE_TILE_SIZE,
                               TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
     SPR_setAutoTileUpload(spriteHead, FALSE);
-    SPR_setFrame(spriteHead, 1); // Right-facing frame
+    SPR_setFrame(spriteHead, 1);  // Right-facing frame
     SPR_setVRAMTileIndex(spriteHead, headVramIndexes[1]);
     
     // Create initial body sprites
@@ -338,7 +348,7 @@ static void initGame(void) {
                                        snakeBody[i].y * SNAKE_TILE_SIZE,
                                        TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
         if (!spriteBody[i-1]) {
-            snakeLength = i; // Cap length if sprite allocation fails
+            snakeLength = i;      // Cap length if sprite allocation fails
             break;
         }
         SPR_setAutoTileUpload(spriteBody[i-1], FALSE);
@@ -346,7 +356,7 @@ static void initGame(void) {
         SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[0]);
     }
     for (u16 i = snakeLength - 1; i < SNAKE_MAX_LENGTH - 1; i++) {
-        spriteBody[i] = NULL; // Clear unused sprite slots
+        spriteBody[i] = NULL;     // Clear unused sprite slots
     }
     
     // Place initial food
@@ -373,10 +383,10 @@ static void initGame(void) {
     VDP_drawText(scoreText, 1, 0);
 }
 
-// Displays intro screen with black background and intro.png
+// Displays intro screen with updated title "AI-MAZE-ING SNAKE"
 static void showIntroScreen(void) {
     PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000)); // Set intro background to black
-    VDP_clearPlane(BG_A, TRUE); // Clear planes to black
+    VDP_clearPlane(BG_A, TRUE);       // Clear planes to black
     VDP_clearPlane(BG_B, TRUE);
     
     // Load and set intro image on BG_B using PAL1
@@ -384,10 +394,10 @@ static void showIntroScreen(void) {
     VDP_setMapEx(BG_B, intro.tilemap, TILE_ATTR_FULL(PAL1, FALSE, FALSE, FALSE, TILE_USER_INDEX),
                  0, 0, 0, 0, 40, 28);
     
-    // Draw intro text on BG_A using PAL0 (white on black)
-    VDP_drawText("AI SNAKE", 15, 2);
-    VDP_drawText("PRESS START TO PLAY", 11, 6);
-    VDP_drawText("PRESS B TO TOGGLE MUSIC", 9, 10);
+    // Draw intro text on BG_A using PAL0 (dark green)
+    VDP_drawText("AI-MAZE-ING SNAKE", 12, 2); // Updated title, centered
+    VDP_drawText("START TO PLAY", 14, 6);    // "PRESS" removed
+    VDP_drawText("B TO TOGGLE MUSIC", 12, 10); // "PRESS" removed
     
     // Initialize intro state
     introAnimFrame = 0;
@@ -402,13 +412,13 @@ static void showIntroScreen(void) {
     musicEnabled = TRUE;
 }
 
-// Updates intro screen (blinking "PRESS START TO PLAY" text)
+// Updates intro screen (blinking "START TO PLAY" text)
 static void updateIntroScreen(void) {
     introAnimFrame++;
-    if (introAnimFrame % 60 < 30) { // Blink every 60 frames (1 second at 60 FPS)
-        VDP_drawText("PRESS START TO PLAY", 11, 6);
+    if (introAnimFrame % 60 < 30) {   // Blink every 60 frames (1 second at 60 FPS)
+        VDP_drawText("START TO PLAY", 14, 6);
     } else {
-        VDP_clearText(11, 6, 19);
+        VDP_clearText(14, 6, 13);
     }
 }
 
@@ -452,13 +462,13 @@ static void handleInput(void) {
     }
 }
 
-// Updates game logic (snake movement, collisions, food)
+// Updates game logic (snake movement, collisions, food handling)
 static void updateGame(void) {
-    s16 newHeadX = snakeBody[0].x; // Current head position
-    s16 newHeadY = snakeBody[0].y;
+    s16 newHeadX = snakeBody[0].x; // Current head X position
+    s16 newHeadY = snakeBody[0].y; // Current head Y position
     
-    direction = nextDirection; // Apply buffered direction
-    switch (direction) { // Move head based on direction
+    direction = nextDirection;     // Apply buffered direction
+    switch (direction) {           // Update head position based on direction
         case DIR_UP:    newHeadY--; break;
         case DIR_RIGHT: newHeadX++; break;
         case DIR_DOWN:  newHeadY++; break;
@@ -498,14 +508,14 @@ static void updateGame(void) {
             }
         }
         
-        playEatSound(); // Play eating sound effect
-        score += 10;    // Increase score
+        playEatSound();           // Play eating sound effect
+        score += 10;              // Increase score by 10
         char scoreText[20];
         sprintf(scoreText, "SCORE: %4d", score);
         VDP_clearText(1, 0, 20);
-        VDP_drawText(scoreText, 1, 0);
+        VDP_drawText(scoreText, 1, 0); // Update score display
         
-        generateFood(); // Place new food
+        generateFood();           // Place new food
         SPR_setPosition(spriteFood, food.x * SNAKE_TILE_SIZE, food.y * SNAKE_TILE_SIZE);
         
         if (score % 50 == 0 && frameDelay > MIN_DELAY) frameDelay--; // Increase speed every 50 points
@@ -531,7 +541,7 @@ static void updateGame(void) {
     snakeBody[0].y = newHeadY;
 }
 
-// Renders game sprites to the screen
+// Renders game sprites (head, body, food) to the screen
 static void drawGame(void) {
     // Position and animate head sprite
     SPR_setPosition(spriteHead, snakeBody[0].x * SNAKE_TILE_SIZE, snakeBody[0].y * SNAKE_TILE_SIZE);
@@ -561,13 +571,13 @@ static void drawGame(void) {
 
 // Generates a new food position using the free tile list
 static void generateFood(void) {
-    if (freeTileCount == 0) { // No free tiles means player wins
+    if (freeTileCount == 0) {         // No free tiles means player wins
         gameState = STATE_GAMEOVER;
         VDP_drawText("YOU WIN!", 16, 10);
         return;
     }
     
-    u16 pick = random() % freeTileCount; // Pick random free tile
+    u16 pick = random() % freeTileCount; // Pick a random free tile
     food.x = freeTiles[pick].x;
     food.y = freeTiles[pick].y;
     
@@ -590,7 +600,7 @@ static u16 checkCollision(s16 x, s16 y) {
 // Displays game over screen with snake disappearance animation and tune
 static void showGameOver(void) {
     VDP_drawText("GAME OVER", 15, 10);
-    VDP_drawText("PRESS START TO PLAY AGAIN", 8, 12);
+    VDP_drawText("START TO PLAY AGAIN", 11, 12); // Updated to match intro style
     VDP_drawText("FINAL SCORE:", 14, 14);
     
     char scoreText[5];
@@ -601,7 +611,7 @@ static void showGameOver(void) {
     PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
     PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
     
-    waitMs(200); // Brief pause before animation
+    waitMs(200);                      // Brief pause before animation
     
     // Define game-over tune (descending notes)
     Note gameOverTune[] = {
@@ -668,10 +678,10 @@ static void showGameOver(void) {
 // Plays "chomp" sound effect when snake eats food
 static void playEatSound(void) {
     PSG_setEnvelope(0, PSG_ENVELOPE_MAX); // Full volume
-    PSG_setFrequency(0, 1000); // High pitch
+    PSG_setFrequency(0, 1000);            // High pitch
     waitMs(20);
     PSG_setEnvelope(0, PSG_ENVELOPE_MAX / 2); // Half volume
-    PSG_setFrequency(0, 400); // Lower pitch
+    PSG_setFrequency(0, 400);             // Lower pitch
     waitMs(30);
     PSG_setEnvelope(0, PSG_ENVELOPE_MIN); // Silence
 }
@@ -684,14 +694,14 @@ static void updateMusic(void) {
         return;
     }
     
-    if (!musicEnabled) { // Music toggle off
+    if (!musicEnabled) {                  // Music toggle off
         PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
         PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
         return;
     }
     
-    u16 melodyVolume = PSG_ENVELOPE_MAX / 8; // Lower volume for melody
-    u16 bassVolume = PSG_ENVELOPE_MAX / 16;  // Even lower for bass
+    u16 melodyVolume = PSG_ENVELOPE_MAX / 8;   // Lower volume for melody
+    u16 bassVolume = PSG_ENVELOPE_MAX / 16;    // Even lower for bass
     
     // Define intro tune (upbeat pattern)
     static Note introMelody[MELODY_SIZE] = {
@@ -726,9 +736,17 @@ static void updateMusic(void) {
     bassCounter--;
 }
 
-// Toggles pause state and displays/hides "PAUSE" text
+// Toggles pause state and manages "PAUSE" text display with tile restoration
 static void togglePause(void) {
     paused = !paused;
-    if (paused) VDP_drawText("PAUSE", 17, 14);
-    else VDP_clearText(17, 14, 5);
+    const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
+    if (paused) {
+        VDP_drawText("PAUSE", 17, 14); // Display "PAUSE" at position (17, 14)
+    } else {
+        VDP_clearText(17, 14, 5);     // Clear "PAUSE" (5 characters)
+        // Restore sand tiles where "PAUSE" was displayed
+        for (u16 x = 17; x < 22; x++) {
+            VDP_setTileMapXY(BG_A, sandTileAttr, x, 14);
+        }
+    }
 }
