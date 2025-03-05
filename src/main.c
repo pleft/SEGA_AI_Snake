@@ -1,17 +1,19 @@
 // Snake Game for Sega Mega Drive using SGDK 2.00
-// Enhanced with custom wall/sand tiles, dark green text, and updated title as of March 03, 2025
+// Enhanced with custom wall/sand tiles, dark green text, updated title, and portal mechanic as of March 05, 2025
 //
 // Overview:
-// A classic Snake game with a maze playfield, custom PNG tiles for walls and sand, and optimized food placement.
-// The snake grows by eating food, navigates a maze, and ends on collision with walls or itself.
+// A classic Snake game with a maze playfield, custom PNG tiles for walls and sand, optimized food placement, and portals
+// in the border walls. The snake grows by eating food, navigates the maze, and can teleport through portals.
 //
 // Main Features:
-// 1. Gameplay: D-pad controls snake movement; grows on food (score +10); ends on collision with borders, maze walls, or self.
+// 1. Gameplay: D-pad controls snake movement; grows on food (score +10); ends on collision with walls or self; portals
+//    allow teleportation between opposite sides.
 // 2. Visuals:
 //    - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
 //    - Body: 16x8 sprite sheet (2 frames: horizontal, vertical).
 //    - Food: 8x8 red dot.
-//    - Playfield: Custom sand tile (sand.png) background, custom wall tiles (wall.png) for borders and maze.
+//    - Playfield: Custom sand tile (sand.png) background, custom wall tiles (wall.png) for borders and maze, sand tiles
+//      as portals.
 //    - Text: Dark green (PAL0 index 15) for score, intro, pause, and game-over screens.
 //    - Intro: Custom tilemap from intro.png with PAL1.
 // 3. Audio: Chiptune melody with capped tempo, intro tune, "chomp" sound, game-over tune with rest, toggleable.
@@ -34,6 +36,7 @@
 #define MAX_TEMPO_FACTOR 6     // Minimum tempo factor to cap music speed
 #define MAX_WALLS 50           // Maximum number of maze wall segments (each up to 5 tiles)
 #define MAX_FREE_TILES ((GRID_WIDTH - 2) * (GRID_HEIGHT - 3)) // Maximum free tiles: 38x25 = 950
+#define NUM_PORTALS 2          // Number of portal pairs (top-bottom, left-right)
 
 // Snake directions (correspond to head sprite frames)
 #define DIR_UP 0               // Up direction (frame 2)
@@ -73,6 +76,11 @@ typedef struct {
     u16 baseDuration;          // Base duration in frames
 } Note;
 
+typedef struct {
+    Point entry;               // Entry portal position
+    Point exit;                // Exit portal position
+} Portal;
+
 // Game state variables
 static Point snakeBody[SNAKE_MAX_LENGTH]; // Snake segments (head at index 0)
 static u16 snakeLength;                   // Current length of the snake
@@ -91,6 +99,7 @@ static Point mazeWalls[MAX_WALLS * 5];    // Maze wall positions (up to 50 segme
 static u16 wallCount;                     // Total number of maze wall tiles
 static Point freeTiles[MAX_FREE_TILES];   // List of free tile positions for food placement
 static u16 freeTileCount;                 // Number of free tiles available
+static Portal portals[NUM_PORTALS];       // Array of portal pairs
 
 // Music state variables
 static Note melody[MELODY_SIZE] = {       // Main gameplay melody
@@ -120,15 +129,15 @@ static u16 wallVramIndex;                 // VRAM index for wall tile
 static u16 sandVramIndex;                 // VRAM index for sand tile
 
 // Function prototypes
-static void initGame(void);               // Initializes game state, sprites, and tiles
+static void initGame(void);               // Initializes game state, sprites, tiles, and portals
 static void showIntroScreen(void);        // Displays intro screen with updated title
 static void updateIntroScreen(void);      // Updates intro screen animation
 static void startGame(void);              // Transitions to gameplay state
 static void handleInput(void);            // Processes player input from joypad
-static void updateGame(void);             // Updates game logic (movement, collisions, food)
+static void updateGame(void);             // Updates game logic (movement, collisions, portals, food)
 static void drawGame(void);               // Renders game sprites
 static void generateFood(void);           // Places new food using free tile list
-static u16 checkCollision(s16 x, s16 y);  // Checks collisions with snake body or walls
+static u16 checkCollision(s16 x, s16 y);  // Checks collisions with snake body or walls (excludes portals)
 static void showGameOver(void);           // Displays game over screen with animation
 static void playEatSound(void);           // Plays food-eating sound effect
 static void togglePause(void);            // Toggles pause state with tile restoration
@@ -203,7 +212,7 @@ int main() {
     return 0;                         // Never reached due to infinite loop
 }
 
-// Initializes game state, sprites, and tiled playfield
+// Initializes game state, sprites, tiles, and portals
 static void initGame(void) {
     PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887)); // Set gameplay background to sand color
     
@@ -238,15 +247,28 @@ static void initGame(void) {
     
     // Draw outer borders with wall tiles
     for (u16 i = 0; i < GRID_WIDTH; i++) {
-        VDP_setTileMapXY(BG_A, wallTileAttr, i, 1);
-        VDP_setTileMapXY(BG_A, wallTileAttr, i, GRID_HEIGHT - 1);
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, 1);             // Top border (y = 1)
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, GRID_HEIGHT - 1); // Bottom border (y = 27)
     }
     for (u16 i = 2; i < GRID_HEIGHT - 1; i++) {
-        VDP_setTileMapXY(BG_A, wallTileAttr, 0, i);
-        VDP_setTileMapXY(BG_A, wallTileAttr, GRID_WIDTH - 1, i);
+        VDP_setTileMapXY(BG_A, wallTileAttr, 0, i);             // Left border (x = 0)
+        VDP_setTileMapXY(BG_A, wallTileAttr, GRID_WIDTH - 1, i); // Right border (x = 39)
     }
     
-    // Generate random maze walls with wall tiles
+    // Define portal pairs (replace wall tiles with sand tiles *after* borders)
+    // Portal 0: Top (10, 1) to Bottom (10, 27)
+    portals[0].entry.x = 10; portals[0].entry.y = 1;           // Top border
+    portals[0].exit.x = 10; portals[0].exit.y = GRID_HEIGHT - 1; // Bottom border (y = 27)
+    VDP_setTileMapXY(BG_A, sandTileAttr, portals[0].entry.x, portals[0].entry.y);
+    VDP_setTileMapXY(BG_A, sandTileAttr, portals[0].exit.x, portals[0].exit.y);
+    
+    // Portal 1: Left (0, 10) to Right (39, 10)
+    portals[1].entry.x = 0; portals[1].entry.y = 10;           // Left border
+    portals[1].exit.x = GRID_WIDTH - 1; portals[1].exit.y = 10; // Right border (x = 39)
+    VDP_setTileMapXY(BG_A, sandTileAttr, portals[1].entry.x, portals[1].entry.y);
+    VDP_setTileMapXY(BG_A, sandTileAttr, portals[1].exit.x, portals[1].exit.y);
+    
+    // Generate random maze walls with wall tiles (inside playable area)
     wallCount = 0;
     u16 numWalls = 10;                // Number of maze segments
     for (u16 w = 0; w < numWalls && wallCount < MAX_WALLS * 5; w++) {
@@ -278,7 +300,7 @@ static void initGame(void) {
         }
     }
     
-    // Initialize free tile list (playable area minus walls and snake)
+    // Initialize free tile list (playable area minus walls and snake, including portals)
     freeTileCount = 0;
     for (u16 y = 2; y < GRID_HEIGHT - 1; y++) {
         for (u16 x = 1; x < GRID_WIDTH - 1; x++) {
@@ -295,6 +317,15 @@ static void initGame(void) {
                 freeTileCount++;
             }
         }
+    }
+    // Add portal tiles to free tile list
+    for (u16 i = 0; i < NUM_PORTALS; i++) {
+        freeTiles[freeTileCount].x = portals[i].entry.x;
+        freeTiles[freeTileCount].y = portals[i].entry.y;
+        freeTileCount++;
+        freeTiles[freeTileCount].x = portals[i].exit.x;
+        freeTiles[freeTileCount].y = portals[i].exit.y;
+        freeTileCount++;
     }
     
     // Initialize snake (head at index 0)
@@ -462,7 +493,7 @@ static void handleInput(void) {
     }
 }
 
-// Updates game logic (snake movement, collisions, food handling)
+// Updates game logic (snake movement, collisions, portals, food handling)
 static void updateGame(void) {
     s16 newHeadX = snakeBody[0].x; // Current head X position
     s16 newHeadY = snakeBody[0].y; // Current head Y position
@@ -475,8 +506,27 @@ static void updateGame(void) {
         case DIR_LEFT:  newHeadX--; break;
     }
     
-    // Check collision with borders or maze walls
-    if (newHeadX <= 0 || newHeadX >= GRID_WIDTH - 1 || newHeadY <= 1 || newHeadY >= GRID_HEIGHT - 1 || checkCollision(newHeadX, newHeadY)) {
+    // Check for portal entry
+    for (u16 i = 0; i < NUM_PORTALS; i++) {
+        if (newHeadX == portals[i].entry.x && newHeadY == portals[i].entry.y) {
+            newHeadX = portals[i].exit.x;
+            newHeadY = portals[i].exit.y;
+            break; // Exit loop after teleporting
+        }
+        else if (newHeadX == portals[i].exit.x && newHeadY == portals[i].exit.y) {
+            newHeadX = portals[i].entry.x;
+            newHeadY = portals[i].entry.y;
+            break; // Exit loop after teleporting
+        }
+    }
+    
+    // Check collision with borders or maze walls (portals are passable)
+    if ((newHeadX <= 0 || newHeadX >= GRID_WIDTH - 1 || newHeadY <= 1 || newHeadY >= GRID_HEIGHT - 1) &&
+        !((newHeadX == portals[0].entry.x && newHeadY == portals[0].entry.y) ||
+          (newHeadX == portals[0].exit.x && newHeadY == portals[0].exit.y) ||
+          (newHeadX == portals[1].entry.x && newHeadY == portals[1].entry.y) ||
+          (newHeadX == portals[1].exit.x && newHeadY == portals[1].exit.y)) ||
+        checkCollision(newHeadX, newHeadY)) {
         gameState = STATE_GAMEOVER;
         showGameOver();
         return;
@@ -586,7 +636,7 @@ static void generateFood(void) {
     freeTileCount--;
 }
 
-// Checks for collisions with snake body (excluding head) or maze walls
+// Checks for collisions with snake body (excluding head) or maze walls (excludes portals)
 static u16 checkCollision(s16 x, s16 y) {
     for (u16 i = 1; i < snakeLength; i++) { // Check snake body, skip head
         if (snakeBody[i].x == x && snakeBody[i].y == y) return TRUE;
