@@ -1,14 +1,15 @@
 // Snake Game for Sega Mega Drive using SGDK 2.00
-// Enhanced with levels, custom wall/sand tiles, dark green text, portals, and maze as of March 05, 2025
+// Enhanced with levels, custom wall/sand tiles, dark green text, portals, maze, and smooth level transitions as of March 07, 2025
 //
 // Overview:
 // A classic Snake game with a maze playfield where the snake must eat a specified number of food sprites
 // to complete each level. Levels increase in difficulty with more food targets and maze walls. Portals
-// allow teleportation between borders.
+// allow teleportation between borders. Level transitions now include a brief intermission with a "Level X"
+// message, blinking text, and a jingle for polish.
 //
 // Main Features:
 // 1. Levels: Each level requires eating a set number of food sprites (e.g., 5 for Level 1, 10 for Level 2).
-//    On completion, the maze and portals reset randomly while preserving the snake’s state.
+//    On completion, a transition state displays the new level before resetting the maze and portals.
 // 2. Gameplay: D-pad controls movement; snake grows on food (score +10); ends on collision with walls/self.
 // 3. Visuals:
 //    - Head: 32x8 sprite sheet (4 frames: down, right, up, left).
@@ -16,7 +17,7 @@
 //    - Food: 8x8 red dot.
 //    - Playfield: Sand tile background, wall tiles for borders/maze, sand tiles as portals.
 //    - Text: Dark green (PAL0 index 15) for score, level info, intro, pause, and game-over screens.
-// 4. Audio: Chiptune melody with capped tempo, intro tune, "chomp" sound, game-over tune, toggleable.
+// 4. Audio: Chiptune melody with capped tempo, intro tune, "chomp" sound, game-over tune, level-up jingle, toggleable.
 // 5. Controls: Start toggles states/pauses; D-pad moves snake; B toggles music in intro.
 
 #include <genesis.h>
@@ -36,6 +37,7 @@
 #define MAX_WALLS 50           // Maximum number of maze wall segments (each up to 5 tiles)
 #define MAX_FREE_TILES ((GRID_WIDTH - 2) * (GRID_HEIGHT - 3)) // Max free tiles: 38x25 = 950
 #define NUM_PORTALS 2          // Number of portal pairs (top-bottom, left-right)
+#define TRANSITION_DURATION 90 // Transition display time (~1.5s at 60 FPS, adjustable)
 
 // Snake directions (correspond to head sprite frames)
 #define DIR_UP 0               // Up direction (frame 2)
@@ -47,6 +49,7 @@
 #define STATE_INTRO 0          // Intro screen state
 #define STATE_PLAYING 1        // Active gameplay state
 #define STATE_GAMEOVER 2       // Game over state
+#define STATE_LEVEL_TRANSITION 3 // Level transition state
 
 // Music constants (PSG frequencies)
 #define NOTE_C4  262           // C4 (~262 Hz)
@@ -63,6 +66,7 @@
 #define NOTE_REST 0            // Silence (no frequency)
 #define MELODY_SIZE 16         // Length of melody loop
 #define BASS_SIZE 8            // Length of bass loop
+#define LEVEL_UP_SIZE 4        // Length of level-up jingle
 
 // Data structures
 typedef struct {
@@ -102,6 +106,7 @@ static Portal portals[NUM_PORTALS];       // Array of portal pairs
 static u16 currentLevel = 1;              // Current level number (starts at 1)
 static u16 foodEatenThisLevel = 0;        // Food eaten in the current level
 static u16 foodTarget = 5;                // Target food count for current level
+static u16 transitionTimer = 0;           // Frames remaining for level transition
 
 // Music state variables
 static Note melody[MELODY_SIZE] = {       // Main gameplay melody
@@ -116,10 +121,15 @@ static Note bass[BASS_SIZE] = {           // Bassline accompaniment
     {NOTE_A4/2, 16}, {NOTE_E4/2, 16},
     {NOTE_F4/2, 16}, {NOTE_G4/2, 16}
 };
+static Note levelUpJingle[LEVEL_UP_SIZE] = { // Level-up jingle (rising scale)
+    {NOTE_C4, 6}, {NOTE_E4, 6}, {NOTE_G4, 6}, {NOTE_C5, 12}
+};
 static u16 melodyIndex = 0;               // Current melody note index
 static u16 bassIndex = 0;                 // Current bass note index
 static u16 melodyCounter = 0;             // Frames remaining for current melody note
 static u16 bassCounter = 0;               // Frames remaining for current bass note
+static u16 jingleIndex = 0;               // Current jingle note index
+static u16 jingleCounter = 0;             // Frames remaining for jingle note
 
 // Sprite and tile objects
 static Sprite* spriteHead = NULL;         // Head sprite (4 animation frames)
@@ -144,7 +154,7 @@ static u16 checkCollision(s16 x, s16 y);  // Checks collisions with snake body o
 static void showGameOver(void);           // Displays game over screen with animation
 static void playEatSound(void);           // Plays food-eating sound effect
 static void togglePause(void);            // Toggles pause state with tile restoration
-static void updateMusic(void);            // Updates background music playback
+static void updateMusic(void);            // Updates background music and jingle playback
 static void updateLevelDisplay(void);     // Updates level and food progress display
 
 // Main function: Entry point and game loop
@@ -197,30 +207,52 @@ int main() {
     while (1) {                       // Infinite game loop
         handleInput();                // Process player input
         if (gameState == STATE_INTRO) {
-            updateIntroScreen();      // Update intro screen animation
+            updateIntroScreen();      // Update intro animation
             SPR_update();             // Update sprite engine
         }
         else if (gameState == STATE_PLAYING) {
             frameCount++;
-            if (frameCount >= frameDelay && !paused) { // Update game logic at frameDelay intervals
+            if (frameCount >= frameDelay && !paused) { // Update game logic at intervals
                 frameCount = 0;
                 updateGame();
             }
             drawGame();               // Render game state
-            SPR_update();             // Update sprite engine
+            SPR_update();             // Update sprites
         }
-        updateMusic();                // Update music playback
+        else if (gameState == STATE_LEVEL_TRANSITION) { // Handle level transition
+            if (transitionTimer > 0) {
+                transitionTimer--;
+                // Blink "Level X" text (20 frames on, 20 frames off)
+                if ((transitionTimer % 40) < 20) {
+                    char levelText[8];
+                    sprintf(levelText, "LEVEL %d", currentLevel);
+                    VDP_drawText(levelText, 16, 12); // Centered-ish
+                } else {
+                    VDP_clearText(16, 12, 8); // Clear max 8 chars
+                }
+                drawGame();           // Keep rendering snake and food
+                SPR_update();         // Update sprites
+            }
+            if (transitionTimer == 0) {
+                VDP_clearText(16, 12, 8); // Ensure text is cleared
+                initLevel();          // Reset maze and portals
+                gameState = STATE_PLAYING; // Resume gameplay
+                jingleIndex = 0;      // Reset jingle for next transition
+                jingleCounter = 0;
+            }
+        }
+        updateMusic();                // Update music and jingle playback
         SYS_doVBlankProcess();        // Sync to V-blank (60 FPS)
     }
     
     return 0;                         // Never reached due to infinite loop
 }
 
-// Initializes game state and sets up the first level
+// Initializes game state and sets up the first level with a transition
 static void initGame(void) {
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887)); // Set gameplay background to sand color
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0xDEB887)); // Set gameplay background to sand
     
-    // Clean up any existing sprites
+    // Clean up existing sprites
     if (spriteHead) SPR_releaseSprite(spriteHead);
     for (u16 i = 0; i < SNAKE_MAX_LENGTH - 1; i++) {
         if (spriteBody[i]) SPR_releaseSprite(spriteBody[i]);
@@ -236,92 +268,96 @@ static void initGame(void) {
         snakeBody[i].x = SNAKE_START_X - i; // Snake starts horizontally facing right
         snakeBody[i].y = SNAKE_START_Y;
     }
-    direction = DIR_RIGHT;            // Initial direction
-    nextDirection = DIR_RIGHT;        // Buffered direction
-    score = 0;                        // Reset score
-    frameDelay = INITIAL_DELAY;       // Initial game speed
-    frameCount = 0;                   // Reset frame counter
-    paused = FALSE;                   // Not paused
-    prevStartState = FALSE;           // Reset Start button state
-    melodyIndex = 0;                  // Reset music indices
+    direction = DIR_RIGHT;
+    nextDirection = DIR_RIGHT;
+    score = 0;
+    frameDelay = INITIAL_DELAY;
+    frameCount = 0;
+    paused = FALSE;
+    prevStartState = FALSE;
+    melodyIndex = 0;
     bassIndex = 0;
     melodyCounter = 0;
     bassCounter = 0;
-    currentLevel = 1;                 // Start at Level 1
-    foodEatenThisLevel = 0;           // No food eaten yet
-    foodTarget = 5;                   // Level 1 target: 5 food sprites
+    jingleIndex = 0;
+    jingleCounter = 0;
+    currentLevel = 1;
+    foodEatenThisLevel = 0;
+    foodTarget = 5;
     
-    initLevel();                      // Set up maze, portals, and sprites for the first level
+    initLevel();                      // Set up initial level
+    gameState = STATE_LEVEL_TRANSITION; // Start with transition for Level 1
+    transitionTimer = TRANSITION_DURATION;
+    VDP_drawText("LEVEL 1", 16, 12);  // Display "Level 1" immediately
     
     // Display initial score and level info
     char scoreText[20];
     sprintf(scoreText, "SCORE: %4d", score);
-    VDP_drawText(scoreText, 1, 0);    // Score in top-left corner
-    updateLevelDisplay();             // Level info in top-right corner
+    VDP_drawText(scoreText, 1, 0);
+    updateLevelDisplay();
 }
 
 // Resets maze, portals, and food for a new level while preserving snake state
 static void initLevel(void) {
-    // Load wall tile from wall.png
+    // Load wall tile
     u16 vramIndex = TILE_USER_INDEX + intro.tileset->numTile;
     VDP_loadTileSet(&wall_tileset, vramIndex, DMA);
     wallVramIndex = vramIndex;
     const u16 wallTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, wallVramIndex);
     vramIndex += wall_tileset.numTile;
     
-    // Load sand tile from sand.png and tile the playfield
+    // Load sand tile and tile the playfield
     VDP_loadTileSet(&sand_tileset, vramIndex, DMA);
     sandVramIndex = vramIndex;
     const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
     vramIndex += sand_tileset.numTile;
     
-    // Clear playfield and redraw borders with walls
+    // Clear playfield and redraw borders
     VDP_clearPlane(BG_A, TRUE);
+    VDP_clearPlane(BG_B, TRUE);
     for (u16 y = 2; y < GRID_HEIGHT - 1; y++) {
         for (u16 x = 1; x < GRID_WIDTH - 1; x++) {
-            VDP_setTileMapXY(BG_A, sandTileAttr, x, y); // Fill playable area with sand
+            VDP_setTileMapXY(BG_A, sandTileAttr, x, y);
         }
     }
     for (u16 i = 0; i < GRID_WIDTH; i++) {
-        VDP_setTileMapXY(BG_A, wallTileAttr, i, 1);             // Top border
-        VDP_setTileMapXY(BG_A, wallTileAttr, i, GRID_HEIGHT - 1); // Bottom border
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, 1);
+        VDP_setTileMapXY(BG_A, wallTileAttr, i, GRID_HEIGHT - 1);
     }
     for (u16 i = 2; i < GRID_HEIGHT - 1; i++) {
-        VDP_setTileMapXY(BG_A, wallTileAttr, 0, i);             // Left border
-        VDP_setTileMapXY(BG_A, wallTileAttr, GRID_WIDTH - 1, i); // Right border
+        VDP_setTileMapXY(BG_A, wallTileAttr, 0, i);
+        VDP_setTileMapXY(BG_A, wallTileAttr, GRID_WIDTH - 1, i);
     }
     
     // Randomize portal positions
-    // Portal 0: Top-to-Bottom
-    portals[0].entry.x = 5 + (random() % (GRID_WIDTH - 10)); // Random x between 5 and 34
+    portals[0].entry.x = 5 + (random() % (GRID_WIDTH - 10));
     portals[0].entry.y = 1;
     portals[0].exit.x = 5 + (random() % (GRID_WIDTH - 10));
     portals[0].exit.y = GRID_HEIGHT - 1;
     VDP_setTileMapXY(BG_A, sandTileAttr, portals[0].entry.x, portals[0].entry.y);
     VDP_setTileMapXY(BG_A, sandTileAttr, portals[0].exit.x, portals[0].exit.y);
     
-    // Portal 1: Left-to-Right
     portals[1].entry.x = 0;
-    portals[1].entry.y = 5 + (random() % (GRID_HEIGHT - 10)); // Random y between 5 and 22
+    portals[1].entry.y = 5 + (random() % (GRID_HEIGHT - 10));
     portals[1].exit.x = GRID_WIDTH - 1;
     portals[1].exit.y = 5 + (random() % (GRID_HEIGHT - 10));
     VDP_setTileMapXY(BG_A, sandTileAttr, portals[1].entry.x, portals[1].entry.y);
     VDP_setTileMapXY(BG_A, sandTileAttr, portals[1].exit.x, portals[1].exit.y);
     
-    // Generate random maze walls (difficulty increases with level)
+    // Generate random maze walls
     wallCount = 0;
-    u16 numWalls = 5 + currentLevel;  // Base 5 walls + 1 per level
-    if (numWalls > MAX_WALLS) numWalls = MAX_WALLS; // Cap at max segments
+    u16 numWalls = 5 + currentLevel;
+    if (numWalls > MAX_WALLS) numWalls = MAX_WALLS;
     for (u16 w = 0; w < numWalls && wallCount < MAX_WALLS * 5; w++) {
-        u16 isVertical = random() % 2; // 0=horizontal, 1=vertical
-        u16 length = 3 + (random() % 3); // 3-5 tiles per segment
+        u16 isVertical = random() % 2;
+        u16 length = 3 + (random() % 3);
         u16 x, y;
         if (isVertical) {
-            x = 2 + (random() % (GRID_WIDTH - 4)); // Avoid borders
+            x = 2 + (random() % (GRID_WIDTH - 4));
             y = 3 + (random() % (GRID_HEIGHT - length - 4));
             for (u16 i = 0; i < length && y + i < GRID_HEIGHT - 1 && wallCount < MAX_WALLS * 5; i++) {
                 u16 valid = TRUE;
-                for (u16 j = 0; j < snakeLength; j++) { // Avoid snake positions
+                for (u16 j = 0; j < snakeLength; j++) {
                     if (x == snakeBody[j].x && y + i == snakeBody[j].y) valid = FALSE;
                 }
                 if (valid) {
@@ -349,7 +385,7 @@ static void initLevel(void) {
         }
     }
     
-    // Build free tile list (playable area minus walls and snake)
+    // Build free tile list
     freeTileCount = 0;
     for (u16 y = 2; y < GRID_HEIGHT - 1; y++) {
         for (u16 x = 1; x < GRID_WIDTH - 1; x++) {
@@ -374,7 +410,6 @@ static void initLevel(void) {
             }
         }
     }
-    // Add portals to free tile list
     for (u16 i = 0; i < NUM_PORTALS; i++) {
         freeTiles[freeTileCount].x = portals[i].entry.x;
         freeTiles[freeTileCount].y = portals[i].entry.y;
@@ -384,7 +419,7 @@ static void initLevel(void) {
         freeTileCount++;
     }
     
-    // Load head sprite frames if not already loaded
+    // Load head sprite frames
     if (!spriteHead) {
         Animation* headAnim = snake_head_sprite.animations[0];
         for (u16 i = 0; i < 4; i++) {
@@ -402,7 +437,7 @@ static void initLevel(void) {
         SPR_setVRAMTileIndex(spriteHead, headVramIndexes[direction]);
     }
     
-    // Load body sprite frames and create sprites if needed
+    // Load body sprite frames
     Animation* bodyAnim = snake_body_sprite.animations[0];
     if (!spriteBody[0]) {
         for (u16 i = 0; i < 2; i++) {
@@ -433,26 +468,23 @@ static void initLevel(void) {
         SPR_setPosition(spriteFood, food.x * SNAKE_TILE_SIZE, food.y * SNAKE_TILE_SIZE);
     }
     
-    updateLevelDisplay();             // Update level display after initialization
+    updateLevelDisplay();
 }
 
-// Displays intro screen with updated title "AI-MAZE-ING SNAKE"
+// Displays intro screen with title
 static void showIntroScreen(void) {
-    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000)); // Set intro background to black
-    VDP_clearPlane(BG_A, TRUE);       // Clear planes to black
+    PAL_setColor(0, RGB24_TO_VDPCOLOR(0x000000));
+    VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
     
-    // Load and set intro image on BG_B using PAL1
     VDP_loadTileSet(intro.tileset, TILE_USER_INDEX, DMA);
     VDP_setMapEx(BG_B, intro.tilemap, TILE_ATTR_FULL(PAL1, FALSE, FALSE, FALSE, TILE_USER_INDEX),
                  0, 0, 0, 0, 40, 28);
     
-    // Draw intro text on BG_A using PAL0 (dark green)
-    VDP_drawText("AI-MAZE-ING SNAKE", 12, 2); // Centered title
-    VDP_drawText("START TO PLAY", 14, 6);    // Instruction
-    VDP_drawText("B TO TOGGLE MUSIC", 12, 10); // Music toggle hint
+    VDP_drawText("AI-MAZE-ING SNAKE", 12, 2);
+    VDP_drawText("START TO PLAY", 14, 6);
+    VDP_drawText("B TO TOGGLE MUSIC", 12, 10);
     
-    // Initialize intro state
     introAnimFrame = 0;
     gameState = STATE_INTRO;
     melodyIndex = 0;
@@ -465,29 +497,28 @@ static void showIntroScreen(void) {
     musicEnabled = TRUE;
 }
 
-// Updates intro screen animation (blinking "START TO PLAY" text)
+// Updates intro screen animation (blinking text)
 static void updateIntroScreen(void) {
     introAnimFrame++;
-    if (introAnimFrame % 60 < 30) {   // Blink every second (60 frames at 60 FPS)
+    if (introAnimFrame % 60 < 30) {
         VDP_drawText("START TO PLAY", 14, 6);
     } else {
-        VDP_clearText(14, 6, 13);     // Clear "START TO PLAY" (13 characters)
+        VDP_clearText(14, 6, 13);
     }
 }
 
-// Transitions from intro to gameplay state
+// Transitions from intro to gameplay with Level 1 transition
 static void startGame(void) {
     initGame();
-    gameState = STATE_PLAYING;
+    // gameState set to STATE_LEVEL_TRANSITION in initGame()
 }
 
 // Processes player input from joypad
 static void handleInput(void) {
-    const u16 joy = JOY_readJoypad(JOY_1); // Read joypad 1 state
+    const u16 joy = JOY_readJoypad(JOY_1);
     const u16 startPressed = joy & BUTTON_START;
     const u16 bPressed = joy & BUTTON_B;
     
-    // Start button: Toggle game states or pause
     if (startPressed && !prevStartState) {
         if (gameState == STATE_INTRO) startGame();
         else if (gameState == STATE_PLAYING) togglePause();
@@ -495,18 +526,16 @@ static void handleInput(void) {
     }
     prevStartState = startPressed;
     
-    // B button: Toggle music during intro
     static u16 prevBState = FALSE;
     if (gameState == STATE_INTRO && bPressed && !prevBState) {
         musicEnabled = !musicEnabled;
         if (!musicEnabled) {
-            PSG_setEnvelope(1, PSG_ENVELOPE_MIN); // Silence melody
-            PSG_setEnvelope(2, PSG_ENVELOPE_MIN); // Silence bass
+            PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
+            PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
         }
     }
     prevBState = bPressed;
     
-    // D-pad: Update snake direction (only when playing and not paused)
     if (gameState == STATE_PLAYING && !paused) {
         if (joy & BUTTON_UP && direction != DIR_DOWN) nextDirection = DIR_UP;
         else if (joy & BUTTON_RIGHT && direction != DIR_LEFT) nextDirection = DIR_RIGHT;
@@ -515,20 +544,20 @@ static void handleInput(void) {
     }
 }
 
-// Updates game logic (movement, collisions, food, level progression)
+// Updates game logic (movement, collisions, level progression)
 static void updateGame(void) {
-    s16 newHeadX = snakeBody[0].x; // Current head position
+    s16 newHeadX = snakeBody[0].x;
     s16 newHeadY = snakeBody[0].y;
     
-    direction = nextDirection;     // Apply buffered direction
-    switch (direction) {           // Move head based on direction
+    direction = nextDirection;
+    switch (direction) {
         case DIR_UP:    newHeadY--; break;
         case DIR_RIGHT: newHeadX++; break;
         case DIR_DOWN:  newHeadY++; break;
         case DIR_LEFT:  newHeadX--; break;
     }
     
-    // Check for portal entry and teleport if applicable
+    // Portal teleportation
     for (u16 i = 0; i < NUM_PORTALS; i++) {
         if (newHeadX == portals[i].entry.x && newHeadY == portals[i].entry.y) {
             newHeadX = portals[i].exit.x;
@@ -542,7 +571,7 @@ static void updateGame(void) {
         }
     }
     
-    // Check collision with borders or maze walls (portals are passable)
+    // Collision detection
     if ((newHeadX <= 0 || newHeadX >= GRID_WIDTH - 1 || newHeadY <= 1 || newHeadY >= GRID_HEIGHT - 1) &&
         !((newHeadX == portals[0].entry.x && newHeadY == portals[0].entry.y) ||
           (newHeadX == portals[0].exit.x && newHeadY == portals[0].exit.y) ||
@@ -554,19 +583,19 @@ static void updateGame(void) {
         return;
     }
     
-    // Handle food collision
+    // Food collision handling
     if (newHeadX == food.x && newHeadY == food.y) {
-        foodEatenThisLevel++;         // Track food eaten this level
-        if (snakeLength < SNAKE_MAX_LENGTH) { // Grow snake if under max length
+        foodEatenThisLevel++;
+        if (snakeLength < SNAKE_MAX_LENGTH) {
             for (u16 i = snakeLength; i > 0; i--) {
-                snakeBody[i] = snakeBody[i - 1]; // Shift segments forward
+                snakeBody[i] = snakeBody[i - 1];
             }
-            if (snakeLength > 1 && !spriteBody[snakeLength-2]) { // Add new body sprite
+            if (snakeLength > 1 && !spriteBody[snakeLength-2]) {
                 spriteBody[snakeLength-2] = SPR_addSprite(&snake_body_sprite,
-                                                         -16, -16, // Offscreen initially
+                                                         -16, -16,
                                                          TILE_ATTR(PAL0, TRUE, FALSE, FALSE));
                 if (!spriteBody[snakeLength-2]) {
-                    snakeLength--; // Cap length if sprite allocation fails
+                    snakeLength--;
                     VDP_drawText("SPRITE LIMIT!", 14, 10);
                     return;
                 }
@@ -575,36 +604,43 @@ static void updateGame(void) {
                 SPR_setVRAMTileIndex(spriteBody[snakeLength-2], bodyVramIndexes[0]);
             }
             snakeLength++;
-        } else { // Move without growing if at max length
+        } else {
             for (u16 i = snakeLength - 1; i > 0; i--) {
                 snakeBody[i] = snakeBody[i - 1];
             }
         }
         
-        playEatSound();           // Play eating sound
-        score += 10;              // Increase score
+        playEatSound();
+        score += 10;
         char scoreText[20];
         sprintf(scoreText, "SCORE: %4d", score);
         VDP_clearText(1, 0, 20);
-        VDP_drawText(scoreText, 1, 0); // Update score display
+        VDP_drawText(scoreText, 1, 0);
         
         if (foodEatenThisLevel >= foodTarget) { // Level complete
-            currentLevel++;       // Advance to next level
-            foodEatenThisLevel = 0; // Reset food count
-            foodTarget = 5 + (currentLevel - 1) * 5; // 5, 10, 15, etc.
-            initLevel();          // Reset maze and portals
-            if (frameDelay > MIN_DELAY) frameDelay--; // Increase speed
+            currentLevel++;
+            foodEatenThisLevel = 0;
+            foodTarget = 5 + (currentLevel - 1) * 5;
+            if (frameDelay > MIN_DELAY) frameDelay--;
+            
+            // Trigger transition state
+            gameState = STATE_LEVEL_TRANSITION;
+            transitionTimer = TRANSITION_DURATION;
+            jingleIndex = 0;      // Start level-up jingle
+            jingleCounter = 0;
+            char levelText[8];
+            sprintf(levelText, "LEVEL %d", currentLevel);
+            VDP_drawText(levelText, 16, 12); // Initial display before blinking
         } else {
-            generateFood();       // Place new food
+            generateFood();
             SPR_setPosition(spriteFood, food.x * SNAKE_TILE_SIZE, food.y * SNAKE_TILE_SIZE);
         }
         
-        updateLevelDisplay();     // Update level progress display
+        updateLevelDisplay();
     } else { // Move without eating
         for (u16 i = snakeLength - 1; i > 0; i--) {
-            snakeBody[i] = snakeBody[i - 1]; // Shift segments forward
+            snakeBody[i] = snakeBody[i - 1];
         }
-        // Update free tile list: remove old tail, add previous head
         for (u16 i = 0; i < freeTileCount; i++) {
             if (freeTiles[i].x == snakeBody[snakeLength - 1].x && freeTiles[i].y == snakeBody[snakeLength - 1].y) {
                 freeTiles[i] = freeTiles[freeTileCount - 1];
@@ -617,14 +653,12 @@ static void updateGame(void) {
         freeTileCount++;
     }
     
-    // Update head position
     snakeBody[0].x = newHeadX;
     snakeBody[0].y = newHeadY;
 }
 
-// Renders game sprites (head, body, food) to the screen
+// Renders game sprites
 static void drawGame(void) {
-    // Position and animate head sprite
     SPR_setPosition(spriteHead, snakeBody[0].x * SNAKE_TILE_SIZE, snakeBody[0].y * SNAKE_TILE_SIZE);
     switch (direction) {
         case DIR_DOWN:  SPR_setFrame(spriteHead, 0); SPR_setVRAMTileIndex(spriteHead, headVramIndexes[0]); break;
@@ -633,16 +667,15 @@ static void drawGame(void) {
         case DIR_LEFT:  SPR_setFrame(spriteHead, 3); SPR_setVRAMTileIndex(spriteHead, headVramIndexes[3]); break;
     }
     
-    // Position and animate body sprites
     for (u16 i = 1; i < snakeLength; i++) {
         if (spriteBody[i-1]) {
             SPR_setPosition(spriteBody[i-1], snakeBody[i].x * SNAKE_TILE_SIZE, snakeBody[i].y * SNAKE_TILE_SIZE);
             s16 dx = snakeBody[i-1].x - snakeBody[i].x;
             s16 dy = snakeBody[i-1].y - snakeBody[i].y;
-            if (dx != 0) { // Horizontal orientation
+            if (dx != 0) {
                 SPR_setFrame(spriteBody[i-1], 0);
                 SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[0]);
-            } else if (dy != 0) { // Vertical orientation
+            } else if (dy != 0) {
                 SPR_setFrame(spriteBody[i-1], 1);
                 SPR_setVRAMTileIndex(spriteBody[i-1], bodyVramIndexes[1]);
             }
@@ -650,35 +683,34 @@ static void drawGame(void) {
     }
 }
 
-// Places new food at a random free tile position
+// Places new food at a random free tile
 static void generateFood(void) {
-    if (freeTileCount == 0) {         // No free tiles (unlikely with levels)
+    if (freeTileCount == 0) {
         gameState = STATE_GAMEOVER;
         VDP_drawText("YOU WIN!", 16, 10);
         return;
     }
     
-    u16 pick = random() % freeTileCount; // Pick random free tile
+    u16 pick = random() % freeTileCount;
     food.x = freeTiles[pick].x;
     food.y = freeTiles[pick].y;
     
-    // Remove selected tile from free list
     freeTiles[pick] = freeTiles[freeTileCount - 1];
     freeTileCount--;
 }
 
-// Checks for collisions with snake body (excluding head) or maze walls
+// Checks collisions with snake body or walls
 static u16 checkCollision(s16 x, s16 y) {
-    for (u16 i = 1; i < snakeLength; i++) { // Check snake body, skip head
+    for (u16 i = 1; i < snakeLength; i++) {
         if (snakeBody[i].x == x && snakeBody[i].y == y) return TRUE;
     }
-    for (u16 i = 0; i < wallCount; i++) { // Check maze walls
+    for (u16 i = 0; i < wallCount; i++) {
         if (mazeWalls[i].x == x && mazeWalls[i].y == y) return TRUE;
     }
     return FALSE;
 }
 
-// Displays game over screen with animation and final level/score
+// Displays game over screen with animation
 static void showGameOver(void) {
     VDP_drawText("GAME OVER", 15, 10);
     VDP_drawText("START TO PLAY AGAIN", 11, 12);
@@ -688,15 +720,13 @@ static void showGameOver(void) {
     VDP_drawText(scoreText, 19 - (score >= 10 ? (score >= 100 ? (score >= 1000 ? 3 : 2) : 1) : 0), 16);
     char levelText[12];
     sprintf(levelText, "LEVEL: %d", currentLevel);
-    VDP_drawText(levelText, 15, 18); // Show final level reached
+    VDP_drawText(levelText, 15, 18);
     
-    // Silence gameplay music
     PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
     PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
     
-    waitMs(200);                      // Brief pause before animation
+    waitMs(200);
     
-    // Define game-over tune (descending notes)
     Note gameOverTune[] = {
         {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_C4, 8}, {NOTE_G3, 12}, {NOTE_REST, 8}
     };
@@ -704,7 +734,6 @@ static void showGameOver(void) {
     u16 tuneIndex = 0;
     u16 tuneCounter = 0;
     
-    // Animate snake disappearance from tail to head
     for (u16 i = snakeLength - 1; i > 0; i--) {
         if (spriteBody[i-1]) {
             SPR_releaseSprite(spriteBody[i-1]);
@@ -714,7 +743,6 @@ static void showGameOver(void) {
             waitMs(50);
         }
         
-        // Play tune during animation
         if (tuneCounter == 0 && tuneIndex < tuneSize) {
             PSG_setFrequency(1, gameOverTune[tuneIndex].frequency);
             PSG_setEnvelope(1, gameOverTune[tuneIndex].frequency != NOTE_REST ? PSG_ENVELOPE_MAX / 4 : PSG_ENVELOPE_MIN);
@@ -724,7 +752,6 @@ static void showGameOver(void) {
         if (tuneCounter > 0) tuneCounter--;
     }
     
-    // Remove head sprite
     if (spriteHead) {
         SPR_releaseSprite(spriteHead);
         spriteHead = NULL;
@@ -733,7 +760,6 @@ static void showGameOver(void) {
         waitMs(50);
     }
     
-    // Remove food sprite
     if (spriteFood) {
         SPR_releaseSprite(spriteFood);
         spriteFood = NULL;
@@ -742,7 +768,6 @@ static void showGameOver(void) {
         waitMs(50);
     }
     
-    // Finish playing tune
     while (tuneIndex < tuneSize) {
         if (tuneCounter == 0) {
             PSG_setFrequency(1, gameOverTune[tuneIndex].frequency);
@@ -758,35 +783,37 @@ static void showGameOver(void) {
     PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
 }
 
-// Plays "chomp" sound effect when snake eats food
+// Plays "chomp" sound effect
 static void playEatSound(void) {
-    PSG_setEnvelope(0, PSG_ENVELOPE_MAX); // Full volume
-    PSG_setFrequency(0, 1000);            // High pitch
+    PSG_setEnvelope(0, PSG_ENVELOPE_MAX);
+    PSG_setFrequency(0, 1000);
     waitMs(20);
-    PSG_setEnvelope(0, PSG_ENVELOPE_MAX / 2); // Half volume
-    PSG_setFrequency(0, 400);             // Lower pitch
+    PSG_setEnvelope(0, PSG_ENVELOPE_MAX / 2);
+    PSG_setFrequency(0, 400);
     waitMs(30);
-    PSG_setEnvelope(0, PSG_ENVELOPE_MIN); // Silence
+    PSG_setEnvelope(0, PSG_ENVELOPE_MIN);
 }
 
-// Updates chiptune music playback (melody and bass)
+// Updates chiptune music and level-up jingle playback
 static void updateMusic(void) {
     if (gameState == STATE_GAMEOVER || (gameState == STATE_PLAYING && paused)) {
-        PSG_setEnvelope(1, PSG_ENVELOPE_MIN); // Silence melody
-        PSG_setEnvelope(2, PSG_ENVELOPE_MIN); // Silence bass
-        return;
-    }
-    
-    if (!musicEnabled) {                  // Music toggle off
         PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
         PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
+        PSG_setEnvelope(3, PSG_ENVELOPE_MIN); // Silence jingle channel
         return;
     }
     
-    u16 melodyVolume = PSG_ENVELOPE_MAX / 8;   // Lower volume for melody
-    u16 bassVolume = PSG_ENVELOPE_MAX / 16;    // Even lower for bass
+    if (!musicEnabled) {
+        PSG_setEnvelope(1, PSG_ENVELOPE_MIN);
+        PSG_setEnvelope(2, PSG_ENVELOPE_MIN);
+        PSG_setEnvelope(3, PSG_ENVELOPE_MIN);
+        return;
+    }
     
-    // Define intro tune (upbeat pattern)
+    u16 melodyVolume = PSG_ENVELOPE_MAX / 8;
+    u16 bassVolume = PSG_ENVELOPE_MAX / 16;
+    u16 jingleVolume = PSG_ENVELOPE_MAX / 4; // Louder for jingle
+    
     static Note introMelody[MELODY_SIZE] = {
         {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 8},
         {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8},
@@ -794,7 +821,6 @@ static void updateMusic(void) {
         {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8}
     };
     
-    // Select melody based on game state
     Note* currentMelody = (gameState == STATE_INTRO) ? introMelody : melody;
     u16 tempoFactor = (gameState == STATE_INTRO) ? 12 : min((frameDelay * 10) / INITIAL_DELAY, MAX_TEMPO_FACTOR);
     const u16 melodyDuration = (currentMelody[melodyIndex].baseDuration * tempoFactor) / 10;
@@ -817,26 +843,39 @@ static void updateMusic(void) {
         bassIndex = (bassIndex + 1) % BASS_SIZE;
     }
     bassCounter--;
+    
+    // Update level-up jingle (channel 3) during transition
+    if (gameState == STATE_LEVEL_TRANSITION && transitionTimer > 0) {
+        if (jingleCounter == 0 && jingleIndex < LEVEL_UP_SIZE) {
+            PSG_setFrequency(3, levelUpJingle[jingleIndex].frequency);
+            PSG_setEnvelope(3, levelUpJingle[jingleIndex].frequency != NOTE_REST ? jingleVolume : PSG_ENVELOPE_MIN);
+            jingleCounter = levelUpJingle[jingleIndex].baseDuration * 3; // Slower for effect
+            jingleIndex++;
+        }
+        if (jingleCounter > 0) jingleCounter--;
+    } else {
+        PSG_setEnvelope(3, PSG_ENVELOPE_MIN); // Silence jingle outside transition
+    }
 }
 
-// Toggles pause state and manages "PAUSE" text display
+// Toggles pause state
 static void togglePause(void) {
     paused = !paused;
     const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
     if (paused) {
-        VDP_drawText("PAUSE", 17, 14); // Display "PAUSE" at center-ish
+        VDP_drawText("PAUSE", 17, 14);
     } else {
-        VDP_clearText(17, 14, 5);     // Clear "PAUSE" (5 characters)
+        VDP_clearText(17, 14, 5);
         for (u16 x = 17; x < 22; x++) {
-            VDP_setTileMapXY(BG_A, sandTileAttr, x, 14); // Restore sand tiles
+            VDP_setTileMapXY(BG_A, sandTileAttr, x, 14);
         }
     }
 }
 
-// Updates the level and food progress display in the upper-right corner
+// Updates level and food progress display
 static void updateLevelDisplay(void) {
     char levelText[20];
     sprintf(levelText, "LEVEL %d: %d/%d", currentLevel, foodEatenThisLevel, foodTarget);
-    VDP_clearText(GRID_WIDTH - 14, 0, 14); // Clear previous text (max length 14)
-    VDP_drawText(levelText, GRID_WIDTH - strlen(levelText) - 1, 0); // Right-aligned
+    VDP_clearText(GRID_WIDTH - 14, 0, 14);
+    VDP_drawText(levelText, GRID_WIDTH - strlen(levelText) - 1, 0);
 }
