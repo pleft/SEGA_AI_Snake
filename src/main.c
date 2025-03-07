@@ -67,6 +67,7 @@
 #define MELODY_SIZE 16         // Length of melody loop
 #define BASS_SIZE 8            // Length of bass loop
 #define LEVEL_UP_SIZE 4        // Length of level-up jingle
+#define GAMEOVER_SIZE 5        // Length of gameover tune
 
 // Data structures
 typedef struct {
@@ -123,6 +124,15 @@ static Note bass[BASS_SIZE] = {           // Bassline accompaniment
 };
 static Note levelUpJingle[LEVEL_UP_SIZE] = { // Level-up jingle (rising scale)
     {NOTE_C4, 6}, {NOTE_E4, 6}, {NOTE_G4, 6}, {NOTE_C5, 12}
+};
+static Note introMelody[MELODY_SIZE] = {    // Intro melody
+    {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 8},
+    {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8},
+    {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8},
+    {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8}
+};
+static Note gameOverTune[GAMEOVER_SIZE] = {
+    {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_C4, 8}, {NOTE_G3, 12}, {NOTE_REST, 8}
 };
 static u16 melodyIndex = 0;               // Current melody note index
 static u16 bassIndex = 0;                 // Current bass note index
@@ -557,6 +567,9 @@ static void updateGame(void) {
         case DIR_LEFT:  newHeadX--; break;
     }
     
+    // Check food collision before teleportation
+    u16 ateFood = (newHeadX == food.x && newHeadY == food.y);
+    
     // Portal teleportation
     for (u16 i = 0; i < NUM_PORTALS; i++) {
         if (newHeadX == portals[i].entry.x && newHeadY == portals[i].entry.y) {
@@ -571,6 +584,9 @@ static void updateGame(void) {
         }
     }
     
+    // Check food collision after teleportation
+    ateFood |= (newHeadX == food.x && newHeadY == food.y);
+    
     // Collision detection
     if ((newHeadX <= 0 || newHeadX >= GRID_WIDTH - 1 || newHeadY <= 1 || newHeadY >= GRID_HEIGHT - 1) &&
         !((newHeadX == portals[0].entry.x && newHeadY == portals[0].entry.y) ||
@@ -583,8 +599,8 @@ static void updateGame(void) {
         return;
     }
     
-    // Food collision handling
-    if (newHeadX == food.x && newHeadY == food.y) {
+    // Handle food collision
+    if (ateFood) {
         foodEatenThisLevel++;
         if (snakeLength < SNAKE_MAX_LENGTH) {
             for (u16 i = snakeLength; i > 0; i--) {
@@ -727,9 +743,6 @@ static void showGameOver(void) {
     
     waitMs(200);
     
-    Note gameOverTune[] = {
-        {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_C4, 8}, {NOTE_G3, 12}, {NOTE_REST, 8}
-    };
     const u16 tuneSize = 5;
     u16 tuneIndex = 0;
     u16 tuneCounter = 0;
@@ -810,16 +823,15 @@ static void updateMusic(void) {
         return;
     }
     
-    u16 melodyVolume = PSG_ENVELOPE_MAX / 8;
-    u16 bassVolume = PSG_ENVELOPE_MAX / 16;
-    u16 jingleVolume = PSG_ENVELOPE_MAX / 4; // Louder for jingle
+    u16 melodyVolume = PSG_ENVELOPE_MAX / 16; // Lowered base volume
+    u16 bassVolume = PSG_ENVELOPE_MAX / 32;   // Lowered base volume
+    u16 jingleVolume = PSG_ENVELOPE_MAX / 4;  // Louder for jingle
     
-    static Note introMelody[MELODY_SIZE] = {
-        {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8}, {NOTE_G4, 8},
-        {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8},
-        {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_G4, 8}, {NOTE_A4, 8},
-        {NOTE_G4, 8}, {NOTE_E4, 8}, {NOTE_A4, 12}, {NOTE_REST, 8}
-    };
+    // Reduce music volume during transition
+    if (gameState == STATE_LEVEL_TRANSITION) {
+        melodyVolume /= 2;
+        bassVolume /= 2;
+    }
     
     Note* currentMelody = (gameState == STATE_INTRO) ? introMelody : melody;
     u16 tempoFactor = (gameState == STATE_INTRO) ? 12 : min((frameDelay * 10) / INITIAL_DELAY, MAX_TEMPO_FACTOR);
