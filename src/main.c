@@ -238,14 +238,22 @@ int main() {
                     sprintf(levelText, "LEVEL %d", currentLevel);
                     VDP_drawText(levelText, 16, 12); // Centered-ish
                 } else {
+                    const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
                     VDP_clearText(16, 12, 8); // Clear max 8 chars
+                    for (u16 x = 16; x < 24; x++) {
+                        VDP_setTileMapXY(BG_A, sandTileAttr, x, 12);
+                    }
                 }
                 drawGame();           // Keep rendering snake and food
                 SPR_update();         // Update sprites
             }
             if (transitionTimer == 0) {
                 VDP_clearText(16, 12, 8); // Ensure text is cleared
-                initLevel();          // Reset maze and portals
+                const u16 sandTileAttr = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, sandVramIndex);
+                for (u16 x = 16; x < 24; x++) {
+                    VDP_setTileMapXY(BG_A, sandTileAttr, x, 12);
+                }
+                if (currentLevel > 1) initLevel();          // Reset maze and portals
                 gameState = STATE_PLAYING; // Resume gameplay
                 jingleIndex = 0;      // Reset jingle for next transition
                 jingleCounter = 0;
@@ -478,6 +486,10 @@ static void initLevel(void) {
         SPR_setPosition(spriteFood, food.x * SNAKE_TILE_SIZE, food.y * SNAKE_TILE_SIZE);
     }
     
+    // Display initial score and level info
+    char scoreText[20];
+    sprintf(scoreText, "SCORE: %4d", score);
+    VDP_drawText(scoreText, 1, 0);
     updateLevelDisplay();
 }
 
